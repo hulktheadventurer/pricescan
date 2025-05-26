@@ -16,7 +16,7 @@ export default function DashboardPage() {
       try {
         const res = await fetch('/api/tracking/all');
         const data = await res.json();
-        const userEmail = 'hulktheadventurer@gmail.com'; // Confirm this is the email used to track
+const userEmail = 'hogancozynezt@gmail.com';
         console.log('📩 All Entries:', data);
         const userEntries = data.filter(item => item.email === userEmail);
         console.log('🎯 Filtered Entries:', userEntries);
