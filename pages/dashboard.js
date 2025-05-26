@@ -16,10 +16,12 @@ export default function DashboardPage() {
       try {
         const res = await fetch('/api/tracking/all');
         const data = await res.json();
-const userEmail = 'hogancozynezt@gmail.com';
-        console.log('📩 All Entries:', data);
+
+        const userEmail = 'hogancozynezt@gmail.com'; // Adjust this if testing another account
+        console.log('📩 All Entries:', data); // DEBUG: See everything fetched
         const userEntries = data.filter(item => item.email === userEmail);
-        console.log('🎯 Filtered Entries:', userEntries);
+        console.log('🎯 Filtered Entries:', userEntries); // DEBUG: See what matched
+
         setEntries(userEntries);
       } catch (err) {
         console.error('❌ Error loading entries:', err);
