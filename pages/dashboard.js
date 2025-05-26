@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 export default function DashboardPage() {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [hasMounted, setHasMounted] = useState(false); // 👈 Key change
+  const [hasMounted, setHasMounted] = useState(false);
 
   useEffect(() => {
     setHasMounted(true);
@@ -16,8 +16,10 @@ export default function DashboardPage() {
       try {
         const res = await fetch('/api/tracking/all');
         const data = await res.json();
-        const userEmail = 'hulktheadventurer@gmail.com'; // TEMP: Hardcoded email
+        const userEmail = 'hulktheadventurer@gmail.com'; // Confirm this is the email used to track
+        console.log('📩 All Entries:', data);
         const userEntries = data.filter(item => item.email === userEmail);
+        console.log('🎯 Filtered Entries:', userEntries);
         setEntries(userEntries);
       } catch (err) {
         console.error('❌ Error loading entries:', err);
@@ -29,7 +31,7 @@ export default function DashboardPage() {
     fetchUserEntries();
   }, [hasMounted]);
 
-  if (!hasMounted) return null; // Prevent rendering during build
+  if (!hasMounted) return null;
 
   return (
     <div className="p-6">
