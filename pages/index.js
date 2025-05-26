@@ -24,7 +24,14 @@ export default function Home() {
         body: JSON.stringify({ url, email }),
       });
 
-      if (!res.ok) throw new Error('Failed to track');
+      if (!res.ok) {
+        if (res.status === 403) {
+          setStatus('🚫 You’ve reached your free tracking limit (5 items). Want more? Upgrade to Pro-PriceScan!');
+        } else {
+          throw new Error('Failed to track');
+        }
+        return;
+      }
 
       const countRes = await fetch(`/api/tracking/count?email=${encodeURIComponent(email)}`);
       const countData = await countRes.json();
