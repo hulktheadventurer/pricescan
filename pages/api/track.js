@@ -1,8 +1,3 @@
-console.log('🔥 Entering try block in /api/track');
-await dbConnect();
-console.log('🛢️ Connected to DB:', mongoose.connection.name);
-
-
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -19,6 +14,8 @@ const TrackingSchema = new mongoose.Schema({
 const Tracking = mongoose.models.Tracking || mongoose.model('Tracking', TrackingSchema);
 
 export default async function handler(req, res) {
+  console.log('🔥🔥 /api/track endpoint HIT!');
+
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -43,8 +40,9 @@ export default async function handler(req, res) {
   }
 
   try {
+    console.log('🔥 Entering try block in /api/track');
     await dbConnect();
-    console.log('🛢️ Connected to DB:', mongoose.connection.name); // ✅ Debug log
+    console.log('🛢️ Connected to DB:', mongoose.connection.name); // Confirm DB name
 
     const existingCount = await Tracking.countDocuments({ email });
 
