@@ -46,10 +46,10 @@ export default async function handler(req, res) {
 
     console.log(`🧮 User ${email} is tracking ${existingCount} items`);
 
-    // 🔧 TEMPORARILY DISABLE LIMIT CHECK FOR TESTING
-    // if (existingCount >= 5) {
-    //   return res.status(403).json({ message: 'Tracking limit reached. Max 5 items allowed.' });
-    // }
+if (existingCount >= 5) {
+  return res.status(403).json({ message: 'Tracking limit reached. Max 5 items allowed.' });
+}
+
 
     const newTracking = await Tracking.create({ url, email });
     console.log('📦 Tracking saved to DB:', newTracking);
