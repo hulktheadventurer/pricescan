@@ -1,3 +1,8 @@
+console.log('🔥 Entering try block in /api/track');
+await dbConnect();
+console.log('🛢️ Connected to DB:', mongoose.connection.name);
+
+
 import dotenv from 'dotenv';
 dotenv.config();
 
