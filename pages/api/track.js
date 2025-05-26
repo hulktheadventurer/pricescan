@@ -4,6 +4,8 @@ dotenv.config();
 import dbConnect from '../../lib/mongodb';
 import mongoose from 'mongoose';
 
+console.log('🌈 FORCED CLEAN DEPLOY TEST');
+
 const TrackingSchema = new mongoose.Schema({
   url: { type: String, required: true },
   email: { type: String },
