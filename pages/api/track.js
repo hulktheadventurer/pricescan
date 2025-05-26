@@ -13,6 +13,7 @@ const TrackingSchema = new mongoose.Schema({
 
 const Tracking = mongoose.models.Tracking || mongoose.model('Tracking', TrackingSchema);
 
+console.log('🧪 NEW DEPLOYMENT TESTING TRACK.JS');
 export default async function handler(req, res) {
   console.log('🔥🔥 /api/track endpoint HIT!');
 
