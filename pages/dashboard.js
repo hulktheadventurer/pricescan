@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState, useEffect } from 'react';
 
 export default function DashboardPage() {
   const [entries, setEntries] = useState([]);
@@ -17,10 +17,13 @@ export default function DashboardPage() {
         const res = await fetch('/api/tracking/all');
         const data = await res.json();
 
-        const userEmail = 'hogancozynezt@gmail.com'; // Adjust this if testing another account
-        console.log('📩 All Entries:', data); // DEBUG: See everything fetched
+        console.log('📩 All Entries:', data);
+        const emails = [...new Set(data.map(item => item.email))];
+        console.log('📧 Emails Found:', emails);
+
+        const userEmail = emails[0];
         const userEntries = data.filter(item => item.email === userEmail);
-        console.log('🎯 Filtered Entries:', userEntries); // DEBUG: See what matched
+        console.log('🎯 Filtered Entries:', userEntries);
 
         setEntries(userEntries);
       } catch (err) {
@@ -32,6 +35,23 @@ export default function DashboardPage() {
 
     fetchUserEntries();
   }, [hasMounted]);
+
+  const deleteEntry = async (id) => {
+    if (!id) {
+      console.error('❌ Invalid ID passed to deleteEntry');
+      return;
+    }
+
+    try {
+      console.log('🗑️ Attempting to delete ID:', id);
+      const res = await fetch(`/api/tracking/delete?id=${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      console.log('🧼 Deleted:', data);
+      setEntries(prev => prev.filter(e => e._id !== id));
+    } catch (err) {
+      console.error('❌ Error deleting:', err);
+    }
+  };
 
   if (!hasMounted) return null;
 
@@ -50,11 +70,12 @@ export default function DashboardPage() {
               <th className="text-left p-2">Product URL</th>
               <th className="text-left p-2">Latest Price</th>
               <th className="text-left p-2">Last Checked</th>
+              <th className="text-left p-2">Action</th>
             </tr>
           </thead>
           <tbody>
-            {entries.map((entry, i) => (
-              <tr key={i}>
+            {entries.map((entry) => (
+              <tr key={entry._id}>
                 <td className="p-2">
                   <a href={entry.url} target="_blank" rel="noreferrer" className="text-blue-600 underline">
                     {entry.url.slice(0, 50)}...
@@ -65,6 +86,14 @@ export default function DashboardPage() {
                   {entry.lastChecked && !isNaN(new Date(entry.lastChecked))
                     ? new Date(entry.lastChecked).toLocaleString()
                     : '–'}
+                </td>
+                <td className="p-2">
+                  <button
+                    className="text-red-600 hover:underline"
+                    onClick={() => deleteEntry(entry._id)}
+                  >
+                    Delete
+                  </button>
                 </td>
               </tr>
             ))}

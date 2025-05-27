@@ -7,6 +7,7 @@ export default function Home() {
   const [url, setUrl] = useState('');
   const [email, setEmail] = useState('');
   const [status, setStatus] = useState('');
+  const [statusType, setStatusType] = useState(''); // 'success' | 'error' | 'limit'
   const [hasMounted, setHasMounted] = useState(false);
 
   useEffect(() => {
@@ -15,7 +16,8 @@ export default function Home() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setStatus('loading');
+    setStatus('⏳ Tracking your item...');
+    setStatusType('');
 
     try {
       const res = await fetch('/api/track', {
@@ -24,25 +26,28 @@ export default function Home() {
         body: JSON.stringify({ url, email }),
       });
 
-      if (!res.ok) {
-        if (res.status === 403) {
-          setStatus('🚫 You’ve reached your free tracking limit (5 items). Want more? Upgrade to Pro-PriceScan!');
-        } else {
-          throw new Error('Failed to track');
-        }
+      const data = await res.json();
+
+      if (res.status === 403 && data.message?.includes('limit')) {
+        setStatusType('limit');
+        setStatus("🚫 You're already tracking 5 items. Want more? Upgrade to Pro (coming soon!)");
         return;
       }
+
+      if (!res.ok) throw new Error(data.message || 'Failed to track');
 
       const countRes = await fetch(`/api/tracking/count?email=${encodeURIComponent(email)}`);
       const countData = await countRes.json();
       const trackedCount = typeof countData.count === 'number' ? countData.count : 1;
 
       setStatus(`🎉 You’re now tracking ${trackedCount} out of 5 items.`);
+      setStatusType('success');
       setUrl('');
       setEmail('');
     } catch (err) {
       console.error('Tracking error:', err);
       setStatus('❌ Something went wrong. Please try again.');
+      setStatusType('error');
     }
   };
 
@@ -83,18 +88,12 @@ export default function Home() {
       </form>
 
       {status && (
-        <div className="mt-4 text-sm text-gray-700">
-          {status === 'loading' ? (
-            <p>⏳ Tracking your item...</p>
-          ) : (
-            <>
-              <p>{status}</p>
-              {status.includes('🎉') && (
-                <a href="/dashboard" className="inline-block mt-2 text-blue-600 hover:underline">
-                  → View your tracked items
-                </a>
-              )}
-            </>
+        <div className={`mt-4 text-sm ${statusType === 'success' ? 'text-green-600' : 'text-red-600'}`}>
+          <p>{status}</p>
+          {statusType === 'success' && (
+            <a href="/dashboard" className="inline-block mt-2 text-blue-600 hover:underline">
+              → View your tracked items
+            </a>
           )}
         </div>
       )}

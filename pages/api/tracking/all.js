@@ -3,22 +3,20 @@
 import dbConnect from '../../../lib/mongodb';
 import mongoose from 'mongoose';
 
-// Consistent schema definition
 const TrackingSchema = new mongoose.Schema(
   {
     url: { type: String, required: true },
     email: { type: String, required: true },
-    price: { type: String, default: '-' }, // Align with your DB field
+    price: { type: String, default: '-' },
     lastChecked: { type: Date, default: null },
   },
   { timestamps: true }
 );
 
-// Avoid model overwrite errors
 const Tracking = mongoose.models.Tracking || mongoose.model('Tracking', TrackingSchema);
 
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*'); // Optional for dev testing
+  res.setHeader('Access-Control-Allow-Origin', '*');
 
   if (req.method !== 'GET') {
     return res.status(405).json({ message: 'Method Not Allowed' });
@@ -30,9 +28,10 @@ export default async function handler(req, res) {
     const entries = await Tracking.find().sort({ createdAt: -1 });
 
     const formatted = entries.map(entry => ({
+      _id: entry._id.toString(), // ✅ include this
       url: entry.url,
       email: entry.email,
-      latestPrice: entry.price || '-', // Use 'price' consistently
+      latestPrice: entry.price || '-',
       lastChecked: entry.lastChecked,
     }));
 
