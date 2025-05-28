@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "cron": "node scripts/scheduler.js",
-    "postinstall": "puppeteer install"
+    "postinstall": "npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "axios": "^1.9.0",
