@@ -1,19 +1,16 @@
-import puppeteer from 'puppeteer-core';
-import chromium from 'chrome-aws-lambda';
+import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-import puppeteerExtra from 'puppeteer-extra';
 import dotenv from 'dotenv';
 dotenv.config();
 
-puppeteerExtra.use(StealthPlugin());
+puppeteer.use(StealthPlugin());
 
-export async function scrapeAmazonPrice(url) {
+async function scrapeAmazonPrice(url) {
   console.log('🚀 Launching browser...');
-  const browser = await puppeteerExtra.launch({
-    executablePath: process.env.AWS_EXECUTABLE_PATH || await chromium.executablePath || undefined,
-    headless: true,
-    args: chromium.args,
-    defaultViewport: chromium.defaultViewport,
+  const browser = await puppeteer.launch({
+    headless: false, // for debugging, set to true for production
+    defaultViewport: null,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
   const page = await browser.newPage();
@@ -37,11 +34,12 @@ export async function scrapeAmazonPrice(url) {
     const whole = document.querySelector('.a-price-whole');
     const fraction = document.querySelector('.a-price-fraction');
 
-    if (symbol && whole && fraction) {
-      const rawWhole = whole.textContent.replace(/[^\d]/g, '');
-      const rawFraction = fraction.textContent.replace(/[^\d]/g, '');
-      return `${symbol.textContent.trim()}${rawWhole}.${rawFraction}`;
-    }
+  if (symbol && whole && fraction) {
+  const rawWhole = whole.textContent.replace(/[^\d]/g, ''); // removes non-numeric characters
+  const rawFraction = fraction.textContent.replace(/[^\d]/g, '');
+  return `${symbol.textContent.trim()}${rawWhole}.${rawFraction}`;
+}
+
 
     const selectors = [
       '#priceblock_ourprice',
@@ -68,5 +66,12 @@ export async function scrapeAmazonPrice(url) {
   }
 
   await browser.close();
-  return price || '-';
 }
+
+const url = process.argv[2];
+if (!url) {
+  console.error('❌ Please provide an Amazon URL');
+  process.exit(1);
+}
+
+scrapeAmazonPrice(url);
