@@ -1,6 +1,7 @@
 // pages/api/waitlist/index.js
 import dbConnect from '../../../lib/mongodb';
-import WaitlistEntry from '../../../models/WaitlistEntry';
+import WaitlistEntry from '../../../models/Waitlist';
+
 
 export default async function handler(req, res) {
   await dbConnect();
