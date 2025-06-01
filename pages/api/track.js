@@ -37,7 +37,9 @@ export default async function handler(req, res) {
       return res.status(403).json({ message: 'Tracking limit reached. Max 5 items allowed.' });
     }
 
-    const price = await scrapeAmazonPrice(url);
+    const { data } = await axios.post('https://your-scraper-url.onrender.com/scrape', { url });
+const price = data.price;
+
     const newTracking = await Tracking.create({
       url,
       email,
