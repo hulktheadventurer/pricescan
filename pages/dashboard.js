@@ -1,105 +1,120 @@
-import { useState, useEffect } from 'react';
+// pages/dashboard.js
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
+import axios from 'axios';
+import Link from 'next/link';
 
-export default function DashboardPage() {
-  const [entries, setEntries] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [hasMounted, setHasMounted] = useState(false);
+export default function Dashboard() {
+  const router = useRouter();
+
+  const [email, setEmail] = useState('');
+  const [items, setItems] = useState([]);
+  const [message, setMessage] = useState('');
+  const [waitlistJoined, setWaitlistJoined] = useState(false);
 
   useEffect(() => {
-    setHasMounted(true);
-  }, []);
+    if (!router.isReady) return;
 
-  useEffect(() => {
-    if (!hasMounted) return;
+    const storedEmail = sessionStorage.getItem('email');
+    const fromQuery = router.query.email;
 
-    const fetchUserEntries = async () => {
-      try {
-        const res = await fetch('/api/tracking/all');
-        const data = await res.json();
-
-        console.log('📩 All Entries:', data);
-        const emails = [...new Set(data.map(item => item.email))];
-        console.log('📧 Emails Found:', emails);
-
-        const userEmail = emails[0];
-        const userEntries = data.filter(item => item.email === userEmail);
-        console.log('🎯 Filtered Entries:', userEntries);
-
-        setEntries(userEntries);
-      } catch (err) {
-        console.error('❌ Error loading entries:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchUserEntries();
-  }, [hasMounted]);
-
-  const deleteEntry = async (id) => {
-    if (!id) {
-      console.error('❌ Invalid ID passed to deleteEntry');
-      return;
+    if (storedEmail) {
+      setEmail(storedEmail);
+    } else if (fromQuery) {
+      setEmail(fromQuery);
+      sessionStorage.setItem('email', fromQuery);
     }
+  }, [router.isReady, router.query.email]);
 
+  useEffect(() => {
+    if (email) {
+      fetchItems();
+    }
+  }, [email]);
+
+  const fetchItems = async () => {
     try {
-      console.log('🗑️ Attempting to delete ID:', id);
-      const res = await fetch(`/api/tracking/delete?id=${id}`, { method: 'DELETE' });
-      const data = await res.json();
-      console.log('🧼 Deleted:', data);
-      setEntries(prev => prev.filter(e => e._id !== id));
-    } catch (err) {
-      console.error('❌ Error deleting:', err);
+      const res = await axios.get(`/api/dashboard?email=${encodeURIComponent(email)}`);
+      setItems(res.data);
+    } catch {
+      setMessage('❌ Failed to load your items');
     }
   };
 
-  if (!hasMounted) return null;
+  const handleDelete = async (id) => {
+    try {
+      await axios.delete(`/api/tracking/${id}`);
+      fetchItems();
+    } catch {
+      alert('❌ Failed to delete item');
+    }
+  };
+
+  const handleWaitlist = async () => {
+    try {
+      const res = await axios.post('/api/waitlist', { email });
+      if (res.data.alreadyJoined) {
+        setMessage('📬 You’ve already joined the waitlist. Thanks!');
+      } else {
+        setMessage('🎉 You’ve been added to the Pro waitlist!');
+      }
+      setWaitlistJoined(true);
+    } catch {
+      setMessage('❌ Failed to join waitlist. Try again later.');
+    }
+  };
+
+  const handleLogout = () => {
+    sessionStorage.removeItem('email');
+    router.push('/');
+  };
+
+  if (!email) {
+    return (
+      <div style={{ padding: '2rem', textAlign: 'center' }}>
+        <p style={{ backgroundColor: '#f9fafb', padding: '1rem', borderRadius: '8px' }}>Please enter your email on the homepage first.</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-bold mb-4">📋 My Tracked Items</h1>
+    <div style={{ padding: '2rem', fontFamily: 'Arial, sans-serif', maxWidth: 800, margin: '0 auto' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+        <div>
+          <strong>📧 Logged in as:</strong> {email}
+        </div>
+        <div>
+          <button onClick={handleLogout} style={{ backgroundColor: '#ef4444', color: 'white', padding: '0.4rem 0.8rem', border: 'none', borderRadius: 4 }}>
+            Logout
+          </button>
+        </div>
+      </div>
 
-      {loading ? (
-        <p>Loading...</p>
-      ) : entries.length === 0 ? (
-        <p>You’re not tracking any items yet.</p>
-      ) : (
-        <table className="w-full border border-gray-300">
-          <thead>
-            <tr className="bg-gray-100">
-              <th className="text-left p-2">Product URL</th>
-              <th className="text-left p-2">Latest Price</th>
-              <th className="text-left p-2">Last Checked</th>
-              <th className="text-left p-2">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry) => (
-              <tr key={entry._id}>
-                <td className="p-2">
-                  <a href={entry.url} target="_blank" rel="noreferrer" className="text-blue-600 underline">
-                    {entry.url.slice(0, 50)}...
-                  </a>
-                </td>
-                <td className="p-2">{entry.latestPrice || '–'}</td>
-                <td className="p-2">
-                  {entry.lastChecked && !isNaN(new Date(entry.lastChecked))
-                    ? new Date(entry.lastChecked).toLocaleString()
-                    : '–'}
-                </td>
-                <td className="p-2">
-                  <button
-                    className="text-red-600 hover:underline"
-                    onClick={() => deleteEntry(entry._id)}
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <h2>📦 Tracked Items</h2>
+      <p>{items.length} out of 5 items tracked.</p>
+
+      {items.map((item) => (
+        <div key={item._id} style={{ border: '1px solid #ccc', padding: '1rem', borderRadius: '8px', marginBottom: '1rem', background: '#f9f9f9' }}>
+          <p><strong>🔗 URL:</strong> <a href={item.url} target="_blank" rel="noopener noreferrer">{item.url}</a></p>
+          <p>💰 <strong>Price:</strong> {item.price || 'Not found'}</p>
+          <p>📅 <strong>Last Checked:</strong> {item.lastChecked ? new Date(item.lastChecked).toLocaleString() : 'Never'}</p>
+          <button onClick={() => handleDelete(item._id)} style={{ marginTop: '0.5rem', padding: '0.4rem 1rem', backgroundColor: '#ef4444', color: 'white', border: 'none', borderRadius: 4 }}>
+            ❌ Delete
+          </button>
+        </div>
+      ))}
+
+      {!waitlistJoined && (
+        <div style={{ marginTop: '2rem' }}>
+          <h3>🚀 Want more than 5 items?</h3>
+          <p>Join the Pro waitlist and be the first to unlock extended tracking.</p>
+          <button onClick={handleWaitlist} style={{ backgroundColor: '#10b981', color: 'white', padding: '0.5rem 1rem', border: 'none', borderRadius: 4 }}>
+            ✅ Join Pro Waitlist
+          </button>
+        </div>
       )}
+
+      {message && <p style={{ marginTop: '1rem', color: message.startsWith('❌') ? 'red' : 'green' }}>{message}</p>}
     </div>
   );
 }

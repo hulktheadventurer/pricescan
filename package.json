@@ -19,6 +19,7 @@
     "node-cron": "^4.0.7",
     "node-fetch": "^3.3.2",
     "nodemailer": "^7.0.3",
+    "puppeteer": "^24.9.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "react": "18.2.0",

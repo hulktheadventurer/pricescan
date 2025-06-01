@@ -1,118 +1,123 @@
-import { useEffect, useState } from 'react';
-import dynamic from 'next/dynamic';
-
-const Image = dynamic(() => import('next/image'), { ssr: false });
+// pages/index.js
+import { useState } from 'react';
+import axios from 'axios';
+import Head from 'next/head';
+import Link from 'next/link';
 
 export default function Home() {
-  const [url, setUrl] = useState('');
   const [email, setEmail] = useState('');
-  const [status, setStatus] = useState('');
-  const [statusType, setStatusType] = useState(''); // 'success' | 'error' | 'limit'
-  const [hasMounted, setHasMounted] = useState(false);
-
-  useEffect(() => {
-    setHasMounted(true);
-  }, []);
+  const [url, setUrl] = useState('');
+  const [message, setMessage] = useState('');
+  const [showWaitlist, setShowWaitlist] = useState(false);
+  const [waitlistJoined, setWaitlistJoined] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setStatus('⏳ Tracking your item...');
-    setStatusType('');
-
+    setMessage('');
+    setShowWaitlist(false);
+    setLoading(true);
     try {
-      const res = await fetch('/api/track', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, email }),
-      });
-
-      const data = await res.json();
-
-      if (res.status === 403 && data.message?.includes('limit')) {
-        setStatusType('limit');
-        setStatus("🚫 You're already tracking 5 items. Want more? Upgrade to Pro (coming soon!)");
-        return;
-      }
-
-      if (!res.ok) throw new Error(data.message || 'Failed to track');
-
-      const countRes = await fetch(`/api/tracking/count?email=${encodeURIComponent(email)}`);
-      const countData = await countRes.json();
-      const trackedCount = typeof countData.count === 'number' ? countData.count : 1;
-
-      setStatus(`🎉 You’re now tracking ${trackedCount} out of 5 items.`);
-      setStatusType('success');
+      const res = await axios.post('/api/track', { email, url });
+      setMessage(res.data.message || 'Item tracked!');
       setUrl('');
-      setEmail('');
     } catch (err) {
-      console.error('Tracking error:', err);
-      setStatus('❌ Something went wrong. Please try again.');
-      setStatusType('error');
+      if (err.response?.status === 403) {
+        setMessage("🚫 You're already tracking 5 items. Want more? Join the waitlist below!");
+        setShowWaitlist(true);
+      } else {
+        setMessage('❌ Something went wrong. Please try again.');
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
-  if (!hasMounted) return null;
+  const handleWaitlist = async () => {
+    try {
+      const res = await axios.post('/api/waitlist', { email });
+      if (res.data.alreadyJoined) {
+        setMessage('📬 You’ve already joined the waitlist. Thanks!');
+      } else {
+        setMessage('🎉 You’ve been added to the Pro waitlist!');
+      }
+      setShowWaitlist(false);
+      setWaitlistJoined(true);
+    } catch {
+      setMessage('❌ Failed to join waitlist. Try again later.');
+    }
+  };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center">
-      <img src="/logo.png" alt="Price Scan Logo" width="100" height="100" />
+    <>
+      <Head>
+        <title>PriceScan.ai</title>
+      </Head>
+      <main style={{
+        fontFamily: 'Arial, sans-serif',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '100vh',
+        textAlign: 'center',
+        padding: '2rem'
+      }}>
+        <img src="/logo.png" alt="PriceScan Logo" style={{ height: 120, marginBottom: '1rem' }} />
+        <h1 style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>Smarter Shopping Starts Here.</h1>
+        <p style={{ fontSize: '1.1rem' }}>Track prices on your favorite items and get alerted when they drop — for free.</p>
 
-      <h1 className="text-2xl font-bold mt-6 mb-2">Smarter Shopping Starts Here.</h1>
-      <p className="text-gray-600 mb-6">
-        Track prices on your favorite items and get alerted when they drop — for free.
-      </p>
+        <form onSubmit={handleSubmit} style={{ marginTop: '1rem', maxWidth: '400px', width: '100%' }}>
+          <input
+            type="url"
+            placeholder="Amazon product URL"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            required
+            style={{ padding: '0.6rem', width: '100%', marginBottom: '0.5rem', fontSize: '1rem' }}
+          />
+          <input
+            type="email"
+            placeholder="Your email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            style={{ padding: '0.6rem', width: '100%', marginBottom: '0.5rem', fontSize: '1rem' }}
+          />
+          <button
+            type="submit"
+            disabled={loading}
+            style={{ padding: '0.6rem 1.2rem', width: '100%', backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: 4, fontSize: '1rem' }}>
+            {loading ? 'Loading…' : 'Start Tracking'}
+          </button>
+        </form>
 
-      <form onSubmit={handleSubmit} className="w-full max-w-md space-y-4">
-        <input
-          type="url"
-          placeholder="Product URL"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          className="w-full p-2 border rounded"
-          required
-        />
-        <input
-          type="email"
-          placeholder="Your Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="w-full p-2 border rounded"
-          required
-        />
-        <button
-          type="submit"
-          className="w-full bg-blue-600 text-white font-medium py-2 rounded hover:bg-blue-700"
-        >
-          Start Tracking
-        </button>
-      </form>
+        {message && <p style={{ color: message.startsWith('❌') || message.startsWith('🚫') ? 'red' : 'green', marginTop: '1rem', fontSize: '1rem' }}>{message}</p>}
 
-      {status && (
-        <div className={`mt-4 text-sm ${statusType === 'success' ? 'text-green-600' : 'text-red-600'}`}>
-          <p>{status}</p>
-          {statusType === 'success' && (
-            <a href="/dashboard" className="inline-block mt-2 text-blue-600 hover:underline">
-              → View your tracked items
-            </a>
-          )}
+        {showWaitlist && !waitlistJoined && (
+          <button onClick={handleWaitlist} style={{ marginTop: '1rem', padding: '0.5rem 1rem', backgroundColor: '#10b981', color: 'white', border: 'none', borderRadius: 4, fontSize: '1rem' }}>
+            ✅ Join Pro Waitlist
+          </button>
+        )}
+
+     {email && (!showWaitlist || waitlistJoined) && (
+  <p style={{ marginTop: '2rem', fontSize: '1rem' }}>
+    <Link href={`/dashboard?email=${encodeURIComponent(email)}`}>Go to My Dashboard</Link>
+  </p>
+)}
+
+
+
+        <div style={{ marginTop: '2rem', textAlign: 'center', maxWidth: '500px', fontSize: '1rem' }}>
+          <h3 style={{ fontSize: '1.4rem', marginBottom: '0.5rem' }}>🚀 Features</h3>
+          <ul style={{ textAlign: 'left', paddingLeft: 0, listStyle: 'none' }}>
+            <li>✅ Track prices on Amazon (and soon eBay, Etsy...)</li>
+            <li>✅ Get instant email alerts when prices drop</li>
+            <li>✅ Easy-to-use dashboard to manage your items</li>
+            <li>✅ Join the waitlist to unlock Pro tier with more items</li>
+          </ul>
         </div>
-      )}
-
-      <a
-        href="/dashboard"
-        className="mt-8 inline-block text-blue-600 hover:underline text-sm"
-      >
-        Go to My Dashboard
-      </a>
-
-      <div className="mt-16 w-full max-w-3xl text-center">
-        <h2 className="text-xl font-semibold mb-4">🚀 Features</h2>
-        <ul className="space-y-3 text-gray-700">
-          <li>✅ Track prices on Amazon (and soon eBay, Etsy...)</li>
-          <li>✅ Get instant email alerts when prices drop</li>
-          <li>✅ Easy-to-use dashboard to manage your items</li>
-        </ul>
-      </div>
-    </div>
+      </main>
+    </>
   );
 }

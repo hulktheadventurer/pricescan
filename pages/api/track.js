@@ -3,6 +3,7 @@ dotenv.config();
 
 import dbConnect from '../../lib/mongodb';
 import mongoose from 'mongoose';
+import { scrapeAmazonPrice } from '../../lib/scrapeAmazonPrice.js';
 
 console.log('🌈 FORCED CLEAN DEPLOY TEST');
 
@@ -16,6 +17,7 @@ const TrackingSchema = new mongoose.Schema({
 const Tracking = mongoose.models.Tracking || mongoose.model('Tracking', TrackingSchema);
 
 console.log('🧪 NEW DEPLOYMENT TESTING TRACK.JS');
+
 export default async function handler(req, res) {
   console.log('🔥🔥 /api/track endpoint HIT!');
 
@@ -31,7 +33,6 @@ export default async function handler(req, res) {
   }
 
   const { url, email } = req.body;
-
   console.log('📨 Received tracking request:', { email, url });
 
   if (!url || !url.includes('amazon')) {
@@ -45,22 +46,29 @@ export default async function handler(req, res) {
   try {
     console.log('🔥 Entering try block in /api/track');
     await dbConnect();
-    console.log('🛢️ Connected to DB:', mongoose.connection.name); // Confirm DB name
+    console.log('🛢️ Connected to DB:', mongoose.connection.name);
 
     const existingCount = await Tracking.countDocuments({ email });
-
     console.log(`🧮 User ${email} is tracking ${existingCount} items`);
 
     if (existingCount >= 5) {
       return res.status(403).json({ message: 'Tracking limit reached. Max 5 items allowed.' });
     }
 
-    const newTracking = await Tracking.create({ url, email });
+    console.log('🔍 Scraping live price...');
+    const price = await scrapeAmazonPrice(url);
+    const newTracking = await Tracking.create({
+      url,
+      email,
+      price,
+      lastChecked: new Date()
+    });
+
     console.log('📦 Tracking saved to DB:', newTracking);
 
     return res.status(200).json({ message: 'Tracking started!', tracking: newTracking });
   } catch (err) {
-    console.error('❌ DB Error:', err);
+    console.error('❌ Error during tracking:', err);
     return res.status(500).json({ message: 'Failed to save tracking request.' });
   }
 }
