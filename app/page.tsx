@@ -1,103 +1,189 @@
-import Image from "next/image";
+'use client'
 
-export default function Home() {
+import { useEffect, useState } from 'react'
+import axios from 'axios'
+
+interface Product {
+  title: string
+  price: string
+  image: string
+  link: string
+  source: 'Amazon' | 'eBay'
+}
+
+export default function HomePage() {
+  const [query, setQuery] = useState('')
+  const [items, setItems] = useState<Product[]>([])
+  const [tracked, setTracked] = useState<Product[]>([])
+  const [loading, setLoading] = useState(false)
+
+  // --- Load tracked items from localStorage on startup ---
+  useEffect(() => {
+    const saved = localStorage.getItem('trackedProducts')
+    if (saved) setTracked(JSON.parse(saved))
+  }, [])
+
+  // --- Save tracked items to localStorage when changed ---
+  useEffect(() => {
+    localStorage.setItem('trackedProducts', JSON.stringify(tracked))
+  }, [tracked])
+
+  const searchAll = async () => {
+    if (!query) return
+    setLoading(true)
+    setItems([])
+
+    try {
+      const [amz, ebay] = await Promise.all([
+        axios.get(`/api/amazon-search?q=${encodeURIComponent(query)}`),
+        axios.get(`/api/ebay-search?q=${encodeURIComponent(query)}`)
+      ])
+
+      const amzItems =
+        amz.data.ItemsResult?.Items?.map((x: any) => ({
+          title: x.ItemInfo?.Title?.DisplayValue,
+          price: x.Offers?.Listings?.[0]?.Price?.DisplayAmount,
+          image: x.Images?.Primary?.Large?.URL,
+          link: x.DetailPageURL,
+          source: 'Amazon' as const
+        })) || []
+
+      const ebayItems =
+        ebay.data.ItemsResult?.Items?.map((x: any) => ({
+          title: x.ItemInfo?.Title?.DisplayValue,
+          price: x.Offers?.Listings?.[0]?.Price?.DisplayAmount,
+          image: x.Images?.Primary?.Large?.URL,
+          link: x.DetailPageURL,
+          source: 'eBay' as const
+        })) || []
+
+      const combined = [...amzItems, ...ebayItems].sort((a, b) =>
+        parseFloat(a.price.replace(/[^0-9.]/g, '')) -
+        parseFloat(b.price.replace(/[^0-9.]/g, ''))
+      )
+
+      setItems(combined)
+    } catch {
+      alert('Error fetching data')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const toggleTrack = (p: Product) => {
+    const exists = tracked.find(t => t.link === p.link)
+    if (exists) {
+      setTracked(tracked.filter(t => t.link !== p.link))
+    } else {
+      setTracked([...tracked, p])
+    }
+  }
+
+  const isTracked = (p: Product) => tracked.some(t => t.link === p.link)
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <main className="p-6 max-w-3xl mx-auto">
+      <h1 className="text-3xl font-bold mb-6 text-center text-blue-700">
+        PriceScan 🛒 Compare & Track Deals
+      </h1>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+      {/* Search bar */}
+      <div className="flex gap-2 mb-6">
+        <input
+          type="text"
+          placeholder="Search a product..."
+          className="border p-2 flex-grow rounded shadow-sm focus:ring focus:ring-blue-200"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && searchAll()}
+        />
+        <button
+          onClick={searchAll}
+          className="bg-blue-600 text-white px-4 rounded hover:bg-blue-700 transition"
+        >
+          {loading ? 'Searching…' : 'Search'}
+        </button>
+      </div>
+
+      {/* Results */}
+      {loading && <p className="text-center text-gray-500">Loading results…</p>}
+
+      {!loading && items.length > 0 && (
+        <div className="grid md:grid-cols-2 gap-4">
+          {items.map((p, i) => (
+            <div key={i} className="border rounded-lg p-4 shadow hover:shadow-lg transition">
+              <img src={p.image} alt={p.title} className="w-32 h-auto mb-3 rounded" />
+              <h2 className="font-semibold text-lg mb-1 text-gray-800">{p.title}</h2>
+              <p className="text-green-700 font-medium mb-2">{p.price}</p>
+              <div className="flex items-center gap-2">
+                <a
+                  href={p.link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`text-sm font-medium ${
+                    p.source === 'Amazon' ? 'text-blue-600' : 'text-orange-600'
+                  } hover:underline`}
+                >
+                  Buy on {p.source}
+                </a>
+                <button
+                  onClick={() => toggleTrack(p)}
+                  className={`ml-auto px-2 py-1 text-sm rounded border ${
+                    isTracked(p)
+                      ? 'bg-yellow-300 border-yellow-500'
+                      : 'bg-gray-100 border-gray-300 hover:bg-gray-200'
+                  }`}
+                >
+                  {isTracked(p) ? 'Tracking ✅' : 'Track 💾'}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
-  );
+      )}
+
+      {/* Empty state */}
+      {!loading && items.length === 0 && (
+        <p className="text-center text-gray-500">
+          Search any product to compare Amazon and eBay.
+        </p>
+      )}
+
+      {/* Tracked list */}
+      {tracked.length > 0 && (
+        <section className="mt-10 border-t pt-6">
+          <h2 className="text-2xl font-bold mb-4 text-center text-blue-600">
+            Tracked Products ⭐
+          </h2>
+          <div className="grid md:grid-cols-2 gap-4">
+            {tracked.map((p, i) => (
+              <div key={i} className="border rounded-lg p-4 shadow-sm">
+                <img src={p.image} alt={p.title} className="w-24 h-auto mb-2 rounded" />
+                <h3 className="font-semibold text-gray-800 mb-1">{p.title}</h3>
+                <p className="text-green-700 font-medium mb-2">{p.price}</p>
+                <div className="flex items-center gap-2">
+                  <a
+                    href={p.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`text-sm ${
+                      p.source === 'Amazon' ? 'text-blue-600' : 'text-orange-600'
+                    } hover:underline`}
+                  >
+                    View on {p.source}
+                  </a>
+                  <button
+                    onClick={() => toggleTrack(p)}
+                    className="ml-auto text-sm text-red-500 hover:underline"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </main>
+  )
 }
