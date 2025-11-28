@@ -1,28 +1,10 @@
-import fs from "fs";
-import path from "path";
+import { getValidAccessToken } from "@/lib/ebay-auth";
 
 export class EbayAdapter {
-  tokenPath: string;
   marketplace: string;
 
   constructor() {
-    this.tokenPath = path.resolve(process.cwd(), "ebay-token.json");
-    this.marketplace = "EBAY_GB";
-  }
-
-  // Get OAuth token from local file
-  async getAccessToken(): Promise<string> {
-    if (!fs.existsSync(this.tokenPath)) {
-      throw new Error("Missing ebay-token.json");
-    }
-
-    const json = JSON.parse(fs.readFileSync(this.tokenPath, "utf8"));
-
-    if (!json.access_token) {
-      throw new Error("Missing access_token in ebay-token.json");
-    }
-
-    return json.access_token;
+    this.marketplace = "EBAY_GB"; // Same as before
   }
 
   // Extract legacy ID from eBay URL
@@ -95,7 +77,8 @@ export class EbayAdapter {
 
   // Main resolve
   async resolve(input: string) {
-    const token = await this.getAccessToken();
+    // NEW: Get token from refresh flow — NOT from a file
+    const token = await getValidAccessToken();
 
     // Try legacy ID
     const legacyId = this.extractLegacyId(input);
