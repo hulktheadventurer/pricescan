@@ -1,6 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextResponse } from "next/server"; 
 import { createClient } from "@supabase/supabase-js";
-import EbayAdapter from "@/lib/adapters/ebay";
+
+// IMPORTANT: force the TypeScript EbayAdapter (new version)
+import EbayAdapter from "@/lib/adapters/ebay/index";
 
 // Server-side Supabase client
 const supabase = createClient(
@@ -113,14 +115,14 @@ export async function POST(req: Request) {
     const resolvedCurrency = offer.currency ?? "GBP";
 
     // ============================
-    // 💾 Insert price snapshot (with seen_at)
+    // 💾 Insert price snapshot
     // ============================
     const { error: snapErr } = await supabase.from("price_snapshots").insert([
       {
         product_id: product.id,
         price: resolvedPrice,
         currency: resolvedCurrency,
-        seen_at: new Date().toISOString(), // 🔥 force timestamp
+        seen_at: new Date().toISOString(),
       },
     ]);
 
