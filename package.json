@@ -1,19 +1,35 @@
 {
   "name": "pricescan",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev --turbopack",
-"build": "next build --turbopack --no-lint",
+    "build": "next build --turbopack --no-lint",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "check:prices": "node check-prices.cjs",
+    "job:fetcher": "tsx jobs/fetcher.ts",
+    "job:alerts": "tsx jobs/alerts.ts",
+    "job:scheduler": "tsx jobs/scheduler.ts"
   },
   "dependencies": {
-    "axios": "^1.12.2",
+    "@nhost/nhost-js": "^4.0.1",
+    "@supabase/auth-helpers-nextjs": "^0.10.0",
+    "@supabase/supabase-js": "^2.86.0",
+    "axios": "^1.2.2",
+    "chart.js": "^4.5.1",
     "dotenv": "^17.2.3",
+    "graphql": "^16.11.0",
     "next": "15.5.6",
+    "node-cron": "^4.2.1",
+    "node-fetch": "^2.7.0",
+    "pocketbase": "^0.26.3",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-chartjs-2": "^5.3.1",
+    "react-dom": "19.1.0",
+    "resend": "^6.4.2",
+    "sonner": "^2.0.7"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
@@ -24,6 +40,7 @@
     "eslint": "^9",
     "eslint-config-next": "15.5.6",
     "tailwindcss": "^4",
+    "tsx": "^4.19.1",
     "typescript": "^5"
   }
 }

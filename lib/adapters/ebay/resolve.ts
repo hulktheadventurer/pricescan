@@ -1,0 +1,120 @@
+import fs from "fs";
+import path from "path";
+
+export class EbayAdapter {
+  tokenPath: string;
+  marketplace: string;
+
+  constructor() {
+    this.tokenPath = path.resolve(process.cwd(), "ebay-token.json");
+    this.marketplace = "EBAY_GB";
+  }
+
+  // Get OAuth token from local file
+  async getAccessToken(): Promise<string> {
+    if (!fs.existsSync(this.tokenPath)) {
+      throw new Error("Missing ebay-token.json");
+    }
+
+    const json = JSON.parse(fs.readFileSync(this.tokenPath, "utf8"));
+
+    if (!json.access_token) {
+      throw new Error("Missing access_token in ebay-token.json");
+    }
+
+    return json.access_token;
+  }
+
+  // Extract legacy ID from eBay URL
+  extractLegacyId(link: string): string | null {
+    const cleaned = link.split("?")[0];
+    const m = cleaned.match(/\/itm\/(?:[^/]+\/)?(\d{9,12})/);
+    return m ? m[1] : null;
+  }
+
+  // Convert raw API → internal format
+  toOffer(item: any) {
+    const raw = item?.price?.value ?? item?.price;
+    return {
+      title: item?.title || "Unknown eBay Item",
+      price: raw ? Number(raw) : 0,
+      currency: item?.price?.currency || "GBP",
+    };
+  }
+
+  // Fetch using legacy ID
+  async fetchByLegacyId(id: string, token: string) {
+    const url = `https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id=${id}`;
+
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "X-EBAY-C-MARKETPLACE-ID": this.marketplace,
+      },
+    });
+
+    if (res.status === 404) return null;
+
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`eBay legacy lookup failed: ${txt}`);
+    }
+
+    return this.toOffer(await res.json());
+  }
+
+  // Fallback search
+  async fetchBySearch(q: string, token: string) {
+    const url = `https://api.ebay.com/buy/browse/v1/item_summary/search?q=${encodeURIComponent(
+      q
+    )}&limit=1`;
+
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "X-EBAY-C-MARKETPLACE-ID": this.marketplace,
+      },
+    });
+
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`Search failed: ${txt}`);
+    }
+
+    const data = await res.json();
+    const item = data?.itemSummaries?.[0];
+    if (!item) return null;
+
+    return this.toOffer({
+      title: item.title,
+      price: item.price,
+    });
+  }
+
+  // Main resolve
+  async resolve(input: string) {
+    const token = await this.getAccessToken();
+
+    // Try legacy ID
+    const legacyId = this.extractLegacyId(input);
+    if (legacyId) {
+      const found = await this.fetchByLegacyId(legacyId, token);
+      if (found) return found;
+
+      const fallback = await this.fetchBySearch(legacyId, token);
+      if (fallback) return fallback;
+
+      throw new Error(`Legacy ID ${legacyId} not found`);
+    }
+
+    // Fallback search
+    const fallback = await this.fetchBySearch(input, token);
+    if (fallback) return fallback;
+
+    throw new Error("Unable to resolve eBay item");
+  }
+}
+
+export default EbayAdapter;

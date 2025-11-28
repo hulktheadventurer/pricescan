@@ -1,189 +1,333 @@
-'use client'
+"use client";
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
-
-interface Product {
-  title: string
-  price: string
-  image: string
-  link: string
-  source: 'Amazon' | 'eBay'
-}
+import { useState, useEffect } from "react";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { toast } from "sonner";
+import { getEbayAffiliateLink } from "@/lib/affiliates/ebay";
+import Modal from "@/components/Modal";
+import PriceHistoryChart from "@/components/PriceHistoryChart";
 
 export default function HomePage() {
-  const [query, setQuery] = useState('')
-  const [items, setItems] = useState<Product[]>([])
-  const [tracked, setTracked] = useState<Product[]>([])
-  const [loading, setLoading] = useState(false)
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [products, setProducts] = useState<any[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(true);
 
-  // --- Load tracked items from localStorage on startup ---
+  const [showChart, setShowChart] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<any>(null);
+
+  const supabase = createClientComponentClient();
+
+  function detectMerchant(link: string) {
+    if (link.includes("ebay.")) return "ebay";
+    if (link.includes("amazon.")) return "amazon";
+    return "unknown";
+  }
+
+  // Load tracked products
   useEffect(() => {
-    const saved = localStorage.getItem('trackedProducts')
-    if (saved) setTracked(JSON.parse(saved))
-  }, [])
+    loadProducts();
+  }, []);
 
-  // --- Save tracked items to localStorage when changed ---
-  useEffect(() => {
-    localStorage.setItem('trackedProducts', JSON.stringify(tracked))
-  }, [tracked])
-
-  const searchAll = async () => {
-    if (!query) return
-    setLoading(true)
-    setItems([])
+  async function loadProducts() {
+    setLoadingProducts(true);
 
     try {
-      const [amz, ebay] = await Promise.all([
-        axios.get(`/api/amazon-search?q=${encodeURIComponent(query)}`),
-        axios.get(`/api/ebay-search?q=${encodeURIComponent(query)}`)
-      ])
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData?.user;
 
-      const amzItems =
-        amz.data.ItemsResult?.Items?.map((x: any) => ({
-          title: x.ItemInfo?.Title?.DisplayValue,
-          price: x.Offers?.Listings?.[0]?.Price?.DisplayAmount,
-          image: x.Images?.Primary?.Large?.URL,
-          link: x.DetailPageURL,
-          source: 'Amazon' as const
-        })) || []
+      if (!user) {
+        setProducts([]);
+        setLoadingProducts(false);
+        return;
+      }
 
-      const ebayItems =
-        ebay.data.ItemsResult?.Items?.map((x: any) => ({
-          title: x.ItemInfo?.Title?.DisplayValue,
-          price: x.Offers?.Listings?.[0]?.Price?.DisplayAmount,
-          image: x.Images?.Primary?.Large?.URL,
-          link: x.DetailPageURL,
-          source: 'eBay' as const
-        })) || []
+      const { data, error } = await supabase
+        .from("tracked_products")
+        .select(
+          `
+          id,
+          title,
+          url,
+          merchant,
+          locale,
+          sku,
+          price_snapshots!inner (
+            price,
+            currency,
+            seen_at
+          )
+        `
+        )
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .order("seen_at", {
+          foreignTable: "price_snapshots",
+          ascending: false,
+        });
 
-      const combined = [...amzItems, ...ebayItems].sort((a, b) =>
-        parseFloat(a.price.replace(/[^0-9.]/g, '')) -
-        parseFloat(b.price.replace(/[^0-9.]/g, ''))
-      )
+      if (error) throw error;
 
-      setItems(combined)
-    } catch {
-      alert('Error fetching data')
+      const mapped = data.map((item: any) => {
+        const snaps = item.price_snapshots || [];
+        snaps.sort(
+          (a: any, b: any) =>
+            new Date(b.seen_at).getTime() - new Date(a.seen_at).getTime()
+        );
+        const last = snaps[0] ?? null;
+
+        return {
+          ...item,
+          latest_price: last?.price ?? null,
+          currency: last?.currency ?? "GBP",
+          seen_at: last?.seen_at ?? null,
+          price_snapshots: snaps,
+        };
+      });
+
+      setProducts(mapped);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to load tracked items.");
+    }
+
+    setLoadingProducts(false);
+  }
+
+  // Track product
+  async function handleTrack(e: React.FormEvent) {
+    e.preventDefault();
+    if (!url.trim()) return toast.error("Please paste a product link first.");
+
+    setLoading(true);
+
+    try {
+      const merchant = detectMerchant(url);
+      if (merchant !== "ebay") {
+        toast.warning(
+          "Supports eBay only. Amazon & AliExpress coming soon!"
+        );
+        setLoading(false);
+        return;
+      }
+
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData?.user;
+      if (!user) {
+        toast.error("Please sign in first.");
+        setLoading(false);
+        return;
+      }
+
+      const res = await fetch("/api/track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, user_id: user.id }),
+      });
+
+      const result = await res.json();
+
+      if (!res.ok) {
+        if (result.error === "GROUP_LISTING") {
+          toast.warning(
+            "This listing has variations. Select a specific model/colour/storage and paste that URL instead."
+          );
+          return;
+        }
+        throw new Error(result.error || "API error");
+      }
+
+      toast.success("🎉 Product added!");
+      setUrl("");
+      loadProducts();
+    } catch (err: any) {
+      console.error("❌ Add product failed:", err.message);
+      toast.error(err.message || "Could not start tracking.");
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 
-  const toggleTrack = (p: Product) => {
-    const exists = tracked.find(t => t.link === p.link)
-    if (exists) {
-      setTracked(tracked.filter(t => t.link !== p.link))
+  // Delete tracked product
+  async function handleDelete(id: string) {
+    if (!confirm("Stop tracking this item?")) return;
+
+    const { error } = await supabase
+      .from("tracked_products")
+      .delete()
+      .eq("id", id);
+
+    if (error) {
+      toast.error("Delete failed.");
     } else {
-      setTracked([...tracked, p])
+      toast.success("Tracking stopped.");
+      setProducts((prev) => prev.filter((p) => p.id !== id));
     }
   }
-
-  const isTracked = (p: Product) => tracked.some(t => t.link === p.link)
 
   return (
-    <main className="p-6 max-w-3xl mx-auto">
-      <h1 className="text-3xl font-bold mb-6 text-center text-blue-700">
-        PriceScan 🛒 Compare & Track Deals
+    <main className="max-w-6xl mx-auto px-4 py-10 text-center">
+      <h1 className="text-3xl font-bold mb-4 text-blue-600">
+        🔎 PriceScan — Track Product Prices Instantly
       </h1>
 
-      {/* Search bar */}
-      <div className="flex gap-2 mb-6">
+      {/* Input */}
+      <form
+        onSubmit={handleTrack}
+        className="flex flex-col md:flex-row gap-3 w-full max-w-xl mx-auto mb-8"
+      >
         <input
-          type="text"
-          placeholder="Search a product..."
-          className="border p-2 flex-grow rounded shadow-sm focus:ring focus:ring-blue-200"
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && searchAll()}
+          type="url"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="Paste an eBay product link..."
+          className="flex-1 p-3 border rounded-md shadow-sm bg-white focus:ring-2 focus:ring-blue-500"
+          required
         />
+
         <button
-          onClick={searchAll}
-          className="bg-blue-600 text-white px-4 rounded hover:bg-blue-700 transition"
+          type="submit"
+          disabled={loading}
+          className="px-6 py-3 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:opacity-60"
         >
-          {loading ? 'Searching…' : 'Search'}
+          {loading ? "Tracking..." : "Track"}
         </button>
-      </div>
+      </form>
 
-      {/* Results */}
-      {loading && <p className="text-center text-gray-500">Loading results…</p>}
+      <p className="text-gray-500 text-sm mb-10">
+        Works with <b>eBay</b> today.  
+        <br />
+        <span className="text-gray-400">Amazon & AliExpress coming soon.</span>
+      </p>
 
-      {!loading && items.length > 0 && (
-        <div className="grid md:grid-cols-2 gap-4">
-          {items.map((p, i) => (
-            <div key={i} className="border rounded-lg p-4 shadow hover:shadow-lg transition">
-              <img src={p.image} alt={p.title} className="w-32 h-auto mb-3 rounded" />
-              <h2 className="font-semibold text-lg mb-1 text-gray-800">{p.title}</h2>
-              <p className="text-green-700 font-medium mb-2">{p.price}</p>
-              <div className="flex items-center gap-2">
-                <a
-                  href={p.link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={`text-sm font-medium ${
-                    p.source === 'Amazon' ? 'text-blue-600' : 'text-orange-600'
-                  } hover:underline`}
-                >
-                  Buy on {p.source}
-                </a>
-                <button
-                  onClick={() => toggleTrack(p)}
-                  className={`ml-auto px-2 py-1 text-sm rounded border ${
-                    isTracked(p)
-                      ? 'bg-yellow-300 border-yellow-500'
-                      : 'bg-gray-100 border-gray-300 hover:bg-gray-200'
-                  }`}
-                >
-                  {isTracked(p) ? 'Tracking ✅' : 'Track 💾'}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Empty state */}
-      {!loading && items.length === 0 && (
-        <p className="text-center text-gray-500">
-          Search any product to compare Amazon and eBay.
+      {/* Product grid */}
+      {loadingProducts ? (
+        <p className="text-gray-400">Loading your tracked items…</p>
+      ) : products.length === 0 ? (
+        <p className="text-gray-500">
+          You’re not tracking any products yet. <br />
+          <span className="text-gray-400">Paste a link above to start tracking!</span>
         </p>
-      )}
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 text-left">
+          {products.map((item) => {
+            const affiliateUrl = getEbayAffiliateLink(item.url);
 
-      {/* Tracked list */}
-      {tracked.length > 0 && (
-        <section className="mt-10 border-t pt-6">
-          <h2 className="text-2xl font-bold mb-4 text-center text-blue-600">
-            Tracked Products ⭐
-          </h2>
-          <div className="grid md:grid-cols-2 gap-4">
-            {tracked.map((p, i) => (
-              <div key={i} className="border rounded-lg p-4 shadow-sm">
-                <img src={p.image} alt={p.title} className="w-24 h-auto mb-2 rounded" />
-                <h3 className="font-semibold text-gray-800 mb-1">{p.title}</h3>
-                <p className="text-green-700 font-medium mb-2">{p.price}</p>
-                <div className="flex items-center gap-2">
+            return (
+              <div
+                key={item.id}
+                className="
+                  bg-white 
+                  rounded-2xl 
+                  shadow-sm 
+                  border 
+                  border-gray-100 
+                  hover:shadow-lg 
+                  transition-all 
+                  p-6 
+                  flex 
+                  flex-col 
+                  justify-between 
+                  h-[340px]
+                "
+              >
+                {/* Title with fixed height */}
+                <div className="h-[52px] mb-2 overflow-hidden">
+                  <p className="font-semibold text-[18px] text-gray-900 line-clamp-2 leading-tight">
+                    {item.title?.trim() || "Loading…"}
+                  </p>
+                </div>
+
+                {/* Merchant */}
+                <p className="text-sm text-gray-400 mb-1">{item.merchant}</p>
+
+                {/* Price */}
+                {item.latest_price !== null ? (
+                  <p className="text-[26px] font-bold text-gray-900 mb-1">
+                    {item.currency} {item.latest_price.toFixed(2)}
+                  </p>
+                ) : (
+                  <p className="text-sm text-blue-500 mb-1 animate-pulse">
+                    Fetching price…
+                  </p>
+                )}
+
+                {/* Timestamp */}
+                {item.seen_at && (
+                  <p className="text-xs text-gray-400 italic mb-4">
+                    Updated{" "}
+                    {new Date(item.seen_at).toLocaleString("en-GB", {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}
+                  </p>
+                )}
+
+                {/* Price history button */}
+                <button
+                  onClick={() => {
+                    setSelectedProduct(item);
+                    setShowChart(true);
+                  }}
+                  className="text-blue-600 font-medium hover:underline text-sm mb-4 text-left"
+                >
+                  📈 View Price History
+                </button>
+
+                {/* Bottom buttons */}
+                <div className="mt-auto flex gap-3">
                   <a
-                    href={p.link}
+                    href={affiliateUrl}
                     target="_blank"
-                    rel="noopener noreferrer"
-                    className={`text-sm ${
-                      p.source === 'Amazon' ? 'text-blue-600' : 'text-orange-600'
-                    } hover:underline`}
+                    className="
+                      flex-1 
+                      text-center 
+                      bg-blue-600 
+                      text-white 
+                      py-2 
+                      rounded-lg 
+                      hover:bg-blue-700 
+                      transition
+                    "
                   >
-                    View on {p.source}
+                    View
                   </a>
+
                   <button
-                    onClick={() => toggleTrack(p)}
-                    className="ml-auto text-sm text-red-500 hover:underline"
+                    onClick={() => handleDelete(item.id)}
+                    className="
+                      flex-1 
+                      bg-gray-200 
+                      text-gray-700 
+                      py-2 
+                      rounded-lg 
+                      hover:bg-gray-300 
+                      transition
+                    "
                   >
                     Remove
                   </button>
                 </div>
               </div>
-            ))}
-          </div>
-        </section>
+            );
+          })}
+        </div>
       )}
+
+      {/* Price History Modal */}
+      <Modal open={showChart} onClose={() => setShowChart(false)}>
+        <h2 className="text-xl font-semibold mb-3">
+          Price History
+        </h2>
+
+        <PriceHistoryChart
+          snapshots={selectedProduct?.price_snapshots || []}
+        />
+
+        <p className="mt-4 text-gray-400 text-xs text-center">
+          Chart updates automatically as PriceScan collects more data.
+        </p>
+      </Modal>
     </main>
-  )
+  );
 }
