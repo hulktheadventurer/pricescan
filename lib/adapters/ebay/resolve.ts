@@ -1,20 +1,27 @@
-import { getValidAccessToken } from "@/lib/ebay-auth";
+// lib/adapters/ebay/resolve.ts
 
-export class EbayAdapter {
-  marketplace: string;
+export default class EbayAdapter {
+  marketplace = "EBAY_GB";
 
-  constructor() {
-    this.marketplace = "EBAY_GB"; // Same as before
+  constructor() {}
+
+  // Get access token from environment
+  async getAccessToken(): Promise<string> {
+    const token = process.env.EBAY_ACCESS_TOKEN;
+
+    if (!token || token.trim() === "") {
+      throw new Error("Failed to get eBay access token");
+    }
+
+    return token;
   }
 
-  // Extract legacy ID from eBay URL
   extractLegacyId(link: string): string | null {
     const cleaned = link.split("?")[0];
     const m = cleaned.match(/\/itm\/(?:[^/]+\/)?(\d{9,12})/);
     return m ? m[1] : null;
   }
 
-  // Convert raw API → internal format
   toOffer(item: any) {
     const raw = item?.price?.value ?? item?.price;
     return {
@@ -24,7 +31,6 @@ export class EbayAdapter {
     };
   }
 
-  // Fetch using legacy ID
   async fetchByLegacyId(id: string, token: string) {
     const url = `https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id=${id}`;
 
@@ -46,7 +52,6 @@ export class EbayAdapter {
     return this.toOffer(await res.json());
   }
 
-  // Fallback search
   async fetchBySearch(q: string, token: string) {
     const url = `https://api.ebay.com/buy/browse/v1/item_summary/search?q=${encodeURIComponent(
       q
@@ -75,12 +80,10 @@ export class EbayAdapter {
     });
   }
 
-  // Main resolve
+  // Main resolver
   async resolve(input: string) {
-    // NEW: Get token from refresh flow — NOT from a file
-    const token = await getValidAccessToken();
+    const token = await this.getAccessToken();
 
-    // Try legacy ID
     const legacyId = this.extractLegacyId(input);
     if (legacyId) {
       const found = await this.fetchByLegacyId(legacyId, token);
@@ -92,12 +95,9 @@ export class EbayAdapter {
       throw new Error(`Legacy ID ${legacyId} not found`);
     }
 
-    // Fallback search
     const fallback = await this.fetchBySearch(input, token);
     if (fallback) return fallback;
 
     throw new Error("Unable to resolve eBay item");
   }
 }
-
-export default EbayAdapter;
