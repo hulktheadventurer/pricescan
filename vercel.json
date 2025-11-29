@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/refresh-ebay-token",
+      "schedule": "0 */2 * * *"
+    },
+    {
+      "path": "/api/cron/scan-prices",
+      "schedule": "*/20 * * * *"
+    },
+    {
+      "path": "/api/cron/send-alerts",
+      "schedule": "5 */1 * * *"
+    }
+  ]
+}
