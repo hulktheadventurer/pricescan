@@ -4,7 +4,7 @@
 
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
-import { EbayAdapter } from "../lib/adapters/ebay/resolve.js";
+import EbayAdapter from "../lib/adapters/ebay/resolve.js";
 import fs from "fs";
 
 // 🧩 Initialize Supabase
