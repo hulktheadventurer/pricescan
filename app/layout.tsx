@@ -41,12 +41,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <html lang="en">
-      <head>
-        {/* Admitad site verification */}
-        <meta name="verify-admitad" content="0e8bbbb3bf" />
-      </head>
-
       <body className="min-h-screen flex flex-col font-sans bg-gray-50 text-gray-900">
+
         {/* Header */}
         <header className="flex justify-between items-center px-6 py-3 border-b bg-white shadow-sm">
           <Link href="/" className="text-xl font-bold text-blue-600 flex items-center gap-1">
