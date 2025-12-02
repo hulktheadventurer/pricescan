@@ -1,16 +1,14 @@
 "use client";
 
-export const metadata = {
-  other: {
-    "verify-admitad": "0e8bbbb3bf",
-  },
-};
+import { metadata } from "./metadata";
+export { metadata };
 
 import "./globals.css";
 import { Toaster, toast } from "sonner";
 import Link from "next/link";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { useEffect, useState } from "react";
+
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const supabase = createClientComponentClient();
