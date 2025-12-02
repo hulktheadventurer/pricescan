@@ -1,5 +1,11 @@
 "use client";
 
+export const metadata = {
+  other: {
+    "verify-admitad": "0e8bbbb3bf",
+  },
+};
+
 import "./globals.css";
 import { Toaster, toast } from "sonner";
 import Link from "next/link";
@@ -71,7 +77,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </nav>
         </header>
 
-        {/* Content */}
+        {/* Page content */}
         <main className="flex-1">{children}</main>
 
         {/* Footer */}
