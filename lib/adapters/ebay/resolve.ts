@@ -1,19 +1,29 @@
-// lib/adapters/ebay/resolve.ts
+import { createClient } from "@supabase/supabase-js";
 
 export default class EbayAdapter {
   marketplace = "EBAY_GB";
+  supabase;
 
-  constructor() {}
+  constructor() {
+    this.supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+  }
 
-  // Get access token from environment
+  // Load token from Supabase instead of env
   async getAccessToken(): Promise<string> {
-    const token = process.env.EBAY_ACCESS_TOKEN;
+    const { data, error } = await this.supabase
+      .from("system_settings")
+      .select("value")
+      .eq("key", "EBAY_ACCESS_TOKEN")
+      .single();
 
-    if (!token || token.trim() === "") {
-      throw new Error("Failed to get eBay access token");
+    if (error || !data?.value) {
+      throw new Error("No eBay access token found in Supabase");
     }
 
-    return token;
+    return data.value;
   }
 
   extractLegacyId(link: string): string | null {
