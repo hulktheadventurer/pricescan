@@ -1,18 +1,33 @@
 // =======================================================
 // PriceScan - check-prices.cjs (CommonJS worker)
-// Works with ES Module adapters
+// Loads environment from .env.local (shared with Next.js)
 // =======================================================
 
-require("dotenv").config();
+// Force dotenv to load .env.local instead of .env
+require("dotenv").config({ path: ".env.local" });
+
+// Node 18+ has fetch globally. If older Node needed this instead:
+// const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+
 const { createClient } = require("@supabase/supabase-js");
 
 // IMPORTANT: ESM adapter -> need `.default`
-const { default: EbayAdapter } = require("./lib/adapters/ebay");
+const EbayAdapter = require("./lib/adapters/ebay/index.cjs");
 
-// instantiate adapter
+// Instantiate adapter
 const ebay = new EbayAdapter();
 
-// Supabase admin client
+// =======================================================
+// SUPABASE CLIENT (Admin)
+// =======================================================
+//
+// NEXT_PUBLIC_SUPABASE_URL works both in Next.js & Node.
+// But the service role key is NEVER public — so we read:
+//   SUPABASE_SERVICE_ROLE_KEY
+//
+// This is the correct pairing.
+//
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -97,19 +112,20 @@ async function checkPrices() {
           },
           body: JSON.stringify({
             from: process.env.ALERT_FROM,
-            to: [product.user_id], // You can adjust — maybe you use user email lookup
+            to: [product.user_id], // You can adjust — maybe look up the email
             subject: `📉 Price drop: ${product.title}`,
             html: `
-                <h2>Good news!</h2>
-                <p>${product.title} just had a price drop.</p>
-                <p>Old: ${lastPrice} ${currency}<br>New: ${currentPrice} ${currency}</p>
-                <a href="${product.url}">View Product</a>
-              `,
+              <h2>Good news!</h2>
+              <p><strong>${product.title}</strong> just had a price drop.</p>
+              <p>Old: ${lastPrice} ${currency}<br>New: ${currentPrice} ${currency}</p>
+              <a href="${product.url}" style="color:#4F46E5;font-weight:bold;">View Product</a>
+            `,
           }),
         });
 
         console.log(`   📧 Alert sent to ${product.user_id}`);
       }
+
     } catch (err) {
       console.error(`❌ Error processing [${product.id}]:`, err.message || err);
     }

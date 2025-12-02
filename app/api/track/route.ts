@@ -1,156 +1,66 @@
-import { NextResponse } from "next/server"; 
-import { createClient } from "@supabase/supabase-js";
+// app/api/track/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { getEbayAccessToken } from "@/lib/ebay-auth";
 
-// IMPORTANT: force the TypeScript EbayAdapter (new version)
-import EbayAdapter from "@/lib/adapters/ebay/index";
+function extractId(input: string): string | null {
+  if (!input) return null;
 
-// Server-side Supabase client
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  {
-    auth: { persistSession: false, autoRefreshToken: false },
-  }
-);
+  // plain ID?
+  if (/^\d{12,}$/.test(input)) return input;
 
-const ebay = new EbayAdapter();
-
-export async function POST(req: Request) {
   try {
-    const { url, user_id } = await req.json();
+    const url = new URL(input);
+    const match = url.pathname.match(/(\d{12,})/);
+    if (match) return match[1];
+  } catch {}
 
-    console.log("📥 /api/track received:", { url, user_id });
+  return null;
+}
 
-    if (!url || !user_id) {
-      return NextResponse.json(
-        { error: "Missing url or user_id" },
-        { status: 400 }
-      );
-    }
+async function fetchItem(id: string) {
+  const token = await getEbayAccessToken();
 
-    // ============================
-    // 🔍 Detect merchant
-    // ============================
-    let merchant = "unknown";
-    if (url.includes("ebay.")) merchant = "ebay";
-
-    if (merchant === "unknown") {
-      return NextResponse.json(
-        { error: "Unsupported merchant (only eBay for now)" },
-        { status: 400 }
-      );
-    }
-
-    // ============================
-    // 📝 Insert placeholder product
-    // ============================
-    const { data: product, error: insertErr } = await supabase
-      .from("tracked_products")
-      .insert([
-        {
-          user_id,
-          url,
-          merchant,
-          locale: "uk",
-          title: "Fetching title...",
-          sku: null,
-        },
-      ])
-      .select()
-      .single();
-
-    if (insertErr) throw insertErr;
-
-    console.log("🆕 Product inserted:", product.id);
-
-    // ============================
-    // 🔍 Resolve price & title
-    // ============================
-    let result;
-
-    try {
-      result = await ebay.resolve(url);
-    } catch (err: any) {
-      console.error("❌ eBay resolve() failed:", err);
-
-      // Detect eBay item-group error
-      if (
-        err?.response?.errors?.[0]?.errorId === 11006 ||
-        err?.message?.includes("item_group_id")
-      ) {
-        console.warn("⚠️ Item group detected. Deleting placeholder.");
-
-        await supabase.from("tracked_products").delete().eq("id", product.id);
-
-        return NextResponse.json(
-          {
-            error: "GROUP_LISTING",
-            message:
-              "This eBay listing has multiple variations. Please select a specific option (colour/model/storage) before tracking.",
-          },
-          { status: 400 }
-        );
-      }
-
-      throw err;
-    }
-
-    console.log("📦 eBay resolve() result:", result);
-
-    // ============================
-    // 📦 Always use first result (array support)
-    // ============================
-    const offer = Array.isArray(result) ? result[0] : result;
-
-    const resolvedTitle =
-      typeof offer.title === "string" && offer.title.trim() !== ""
-        ? offer.title.trim()
-        : "Unknown eBay Item";
-
-    const resolvedPrice =
-      typeof offer.price === "number" && offer.price > 0
-        ? offer.price
-        : null;
-
-    const resolvedCurrency = offer.currency ?? "GBP";
-
-    // ============================
-    // 💾 Insert price snapshot
-    // ============================
-    const { error: snapErr } = await supabase.from("price_snapshots").insert([
-      {
-        product_id: product.id,
-        price: resolvedPrice,
-        currency: resolvedCurrency,
-        seen_at: new Date().toISOString(),
+  const res = await fetch(
+    `https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id=${id}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
       },
-    ]);
-
-    if (snapErr) {
-      console.error("❌ Failed to insert snapshot:", snapErr);
-      throw snapErr;
     }
+  );
 
-    // ============================
-    // 📝 Update product title
-    // ============================
-    await supabase
-      .from("tracked_products")
-      .update({ title: resolvedTitle })
-      .eq("id", product.id);
+  const data = await res.json();
 
-    return NextResponse.json({
-      success: true,
-      product_id: product.id,
-      title: resolvedTitle,
-      first_price: resolvedPrice,
-      currency: resolvedCurrency,
-    });
-  } catch (err: any) {
-    console.error("❌ /api/track failed:", err);
-    return NextResponse.json(
-      { error: err.message ?? "Unknown server error" },
-      { status: 500 }
-    );
+  return {
+    title: data.title ?? null,
+    price: data.price?.value ?? null,
+    currency: data.price?.currency ?? null,
+    raw: data,
+  };
+}
+
+export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
+  const input = url.searchParams.get("id") || url.searchParams.get("url");
+
+  const id = extractId(input || "");
+  if (!id) {
+    return NextResponse.json({ error: "Invalid id/url" }, { status: 400 });
   }
+
+  const item = await fetchItem(id);
+  return NextResponse.json({ success: true, id, ...item });
+}
+
+export async function POST(req: NextRequest) {
+  const body = await req.json();
+  const input = body.id || body.url;
+
+  const id = extractId(input || "");
+  if (!id) {
+    return NextResponse.json({ error: "Invalid id/url" }, { status: 400 });
+  }
+
+  const item = await fetchItem(id);
+  return NextResponse.json({ success: true, id, ...item });
 }

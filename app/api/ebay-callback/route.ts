@@ -1,16 +1,15 @@
-import { NextResponse } from "next/server";
+// app/api/ebay-callback/route.ts
+import { NextRequest, NextResponse } from "next/server";
 
-export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const code = url.searchParams.get("code");
-
+export function GET(req: NextRequest) {
+  const code = new URL(req.url).searchParams.get("code");
   if (!code) {
-    return NextResponse.json({ error: "No code found in redirect URL." });
+    return NextResponse.json({ error: "No code received" }, { status: 400 });
   }
 
   return NextResponse.json({
-    message: "✅ eBay authorization code received!",
+    message: "OK",
     code,
-    note: "Copy this 'code' value into your .env.local as EBAY_AUTH_CODE within 5 minutes."
+    note: "Paste this into EBAY_AUTH_CODE in .env.local",
   });
 }
