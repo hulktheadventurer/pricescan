@@ -10,7 +10,6 @@ import {
   CurrencyCode,
   convertCurrency,
   isSupportedCurrency,
-  SUPPORTED_CURRENCIES,
 } from "@/lib/currency";
 
 export default function HomePage() {
@@ -54,22 +53,8 @@ export default function HomePage() {
     };
 
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Save new currency + re-render instantly
-  async function handleCurrencyChange(code: CurrencyCode) {
-    setDisplayCurrency(code);
-
-    const { data: userData } = await supabase.auth.getUser();
-    const user = userData?.user;
-    if (!user) return;
-
-    await supabase
-      .from("user_profile")
-      .upsert({ user_id: user.id, currency: code });
-
-    toast.success(`Currency updated to ${code}`);
-  }
 
   async function loadProducts() {
     setLoadingProducts(true);
@@ -94,6 +79,7 @@ export default function HomePage() {
           merchant,
           locale,
           sku,
+          status,
           price_snapshots!inner (
             price,
             currency,
@@ -211,22 +197,7 @@ export default function HomePage() {
         🔎 PriceScan — Track Product Prices Instantly
       </h1>
 
-      {/* ===== Currency Selector ===== */}
-      <div className="mb-6">
-        <select
-          className="border p-2 rounded-md shadow-sm"
-          value={displayCurrency}
-          onChange={(e) =>
-            handleCurrencyChange(e.target.value as CurrencyCode)
-          }
-        >
-          {[...SUPPORTED_CURRENCIES].sort().map((code) => (
-            <option key={code} value={code}>
-              {code}
-            </option>
-          ))}
-        </select>
-      </div>
+      {/* Removed currency selector from here */}
 
       {/* Input */}
       <form
@@ -259,7 +230,7 @@ export default function HomePage() {
         </span>
       </p>
 
-      {/* Product Grid */}
+      {/* Product grid */}
       {loadingProducts ? (
         <p className="text-gray-400">Loading your tracked items…</p>
       ) : products.length === 0 ? (
@@ -341,6 +312,19 @@ export default function HomePage() {
                   </p>
                 )}
 
+                {/* Status badges */}
+                {item.status === "SOLD_OUT" && (
+                  <p className="text-red-600 text-sm font-semibold mb-2">
+                    ❌ SOLD OUT
+                  </p>
+                )}
+
+                {item.status === "ENDED" && (
+                  <p className="text-gray-500 text-sm font-semibold mb-2">
+                    🔚 Listing Ended
+                  </p>
+                )}
+
                 {/* Price History */}
                 <button
                   onClick={() => {
@@ -375,7 +359,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Price History Modal */}
+      {/* Modal */}
       <Modal open={showChart} onClose={() => setShowChart(false)}>
         <h2 className="text-xl font-semibold mb-3">Price History</h2>
 

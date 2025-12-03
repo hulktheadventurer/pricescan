@@ -3,109 +3,92 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import { SUPPORTED_CURRENCIES, CurrencyCode } from "@/lib/currency";
 
-type SupabaseUser = {
-  id: string;
-  email?: string;
-} | null;
+import {
+  SUPPORTED_CURRENCIES,
+  CurrencyCode,
+  isSupportedCurrency,
+} from "@/lib/currency";
 
 export default function Header() {
   const supabase = createClientComponentClient();
-  const [user, setUser] = useState<SupabaseUser>(null);
-  const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
-  const [loadingProfile, setLoadingProfile] = useState(true);
 
-  // Load current user + their currency preference
+  const [user, setUser] = useState<any>(null);
+  const [currency, setCurrency] = useState<CurrencyCode>("GBP");
+
+  // Load user + currency preference
   useEffect(() => {
     const load = async () => {
-      const { data: userData } = await supabase.auth.getUser();
-      const currentUser = userData?.user ?? null;
-      setUser(currentUser);
+      const { data } = await supabase.auth.getUser();
+      const u = data?.user;
+      setUser(u);
 
-      if (currentUser) {
-        const { data, error } = await supabase
+      if (u) {
+        const { data: pref } = await supabase
           .from("user_profile")
           .select("currency")
-          .eq("user_id", currentUser.id)
+          .eq("user_id", u.id)
           .maybeSingle();
 
-        if (!error && data?.currency) {
-          setDisplayCurrency(data.currency as CurrencyCode);
+        if (pref?.currency && isSupportedCurrency(pref.currency)) {
+          setCurrency(pref.currency);
         }
       }
-
-      setLoadingProfile(false);
     };
 
     load();
-  }, [supabase]);
+  }, []);
+
+  // Save new currency + update UI instantly
+  async function handleCurrencyChange(code: CurrencyCode) {
+    setCurrency(code);
+
+    if (user) {
+      await supabase
+        .from("user_profile")
+        .upsert({ user_id: user.id, currency: code });
+    }
+  }
 
   async function signOut() {
     await supabase.auth.signOut();
     window.location.href = "/";
   }
 
-  async function handleCurrencyChange(e: React.ChangeEvent<HTMLSelectElement>) {
-    const newCurrency = e.target.value as CurrencyCode;
-    setDisplayCurrency(newCurrency);
-
-    if (!user) return;
-
-    const { error } = await supabase.from("user_profile").upsert(
-      {
-        user_id: user.id,
-        currency: newCurrency,
-      },
-      { onConflict: "user_id" }
-    );
-
-    if (error) {
-      console.error("Failed to update currency preference:", error);
-    }
-  }
-
   return (
     <header className="w-full border-b bg-white">
       <div className="max-w-6xl mx-auto flex justify-between items-center py-4 px-4">
+
         {/* Logo */}
-        <Link
-          href="/"
-          className="text-xl font-semibold flex items-center space-x-2"
-        >
-          <span role="img" aria-label="chart">
-            📈
-          </span>
+        <Link href="/" className="text-xl font-semibold flex items-center space-x-2">
+          <span role="img">📈</span>
           <span>PriceScan</span>
         </Link>
 
-        {/* Right side */}
-        <nav className="flex items-center space-x-6 text-sm text-gray-700">
-          {/* Currency selector */}
-          {!loadingProfile && (
-            <div className="flex items-center space-x-2">
-              <span className="text-gray-500 hidden sm:inline">Currency:</span>
-              <select
-                value={displayCurrency}
-                onChange={handleCurrencyChange}
-                className="border rounded-md px-2 py-1 text-sm bg-white"
-              >
-                {SUPPORTED_CURRENCIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+        {/* Right section */}
+        <nav className="flex items-center space-x-5 text-sm text-gray-700">
+
+          {/* Currency Selector — SAME as homepage */}
+          <div>
+            <select
+              className="border p-1 px-2 rounded-md shadow-sm bg-white"
+              value={currency}
+              onChange={(e) =>
+                handleCurrencyChange(e.target.value as CurrencyCode)
+              }
+            >
+              {[...SUPPORTED_CURRENCIES].sort().map((code) => (
+                <option key={code} value={code}>
+                  {code}
+                </option>
+              ))}
+            </select>
+          </div>
 
 
-          {/* User info */}
           {user && (
             <>
-              <span className="text-gray-600 hidden sm:inline">
-                {user.email}
-              </span>
+              <span className="text-gray-600">{user.email}</span>
               <button
                 onClick={signOut}
                 className="text-red-600 hover:underline"
