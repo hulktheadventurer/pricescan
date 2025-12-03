@@ -1,4 +1,5 @@
 import "./globals.css";
+import Header from "@/components/Header";
 
 export const metadata = {
   title: "PriceScan — Track Prices Instantly",
@@ -13,7 +14,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <meta name="verify-admitad" content="0e8bbbb3bf" />
       </head>
       <body className="min-h-screen flex flex-col font-sans bg-gray-50 text-gray-900">
-        {children}
+        <Header />
+        <main className="flex-1">{children}</main>
       </body>
     </html>
   );
