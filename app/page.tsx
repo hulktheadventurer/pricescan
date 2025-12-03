@@ -94,7 +94,9 @@ export default function HomePage() {
     setLoadingProducts(false);
   }
 
-  // ✅ FIXED TRACK FUNCTION
+  // ============================================================
+  //  TRACK PRODUCT  — FIXED VERSION WITH CORRECT user_id
+  // ============================================================
   async function handleTrack(e: React.FormEvent) {
     e.preventDefault();
     if (!url.trim()) return toast.error("Please paste a product link first.");
@@ -102,6 +104,15 @@ export default function HomePage() {
     setLoading(true);
 
     try {
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData?.user;
+
+      if (!user) {
+        toast.error("Please sign in first.");
+        setLoading(false);
+        return;
+      }
+
       const merchant = detectMerchant(url);
       if (merchant !== "ebay") {
         toast.warning("Supports eBay only. Amazon & AliExpress coming soon!");
@@ -109,54 +120,30 @@ export default function HomePage() {
         return;
       }
 
-      const { data: userData } = await supabase.auth.getUser();
-      const user = userData?.user;
-      if (!user) {
-        toast.error("Please sign in first.");
-        setLoading(false);
-        return;
-      }
-
-      // 1️⃣ ASK BACKEND TO FETCH LIVE ITEM DATA
+      // ⭐ THE FIX: clean body, send correct user_id
       const res = await fetch("/api/track", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }), // FIXED
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          url,
+          user_id: user.id
+        })
       });
 
       const result = await res.json();
-      if (!res.ok) throw new Error(result.error || "API error");
 
-      const { id, title, price, currency } = result;
-
-      // 2️⃣ INSERT INTO DATABASE
-      const { data: inserted, error } = await supabase
-        .from("tracked_products")
-        .insert({
-          user_id: user.id,
-          url,
-          merchant: "ebay",
-          sku: id,
-          title: title ?? null,
-          locale: "uk",
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      // 3️⃣ INITIAL PRICE SNAPSHOT
-      await supabase.from("price_snapshots").insert({
-        product_id: inserted.id,
-        price,
-        currency,
-      });
+      if (!res.ok) {
+        throw new Error(result.error || "Track failed");
+      }
 
       toast.success("🎉 Product added!");
       setUrl("");
       loadProducts();
+
     } catch (err: any) {
-      console.error("❌ Add product failed:", err.message);
+      console.error("❌ Add product failed:", err);
       toast.error(err.message || "Could not start tracking.");
     } finally {
       setLoading(false);
@@ -215,16 +202,13 @@ export default function HomePage() {
         <span className="text-gray-400">Amazon & AliExpress coming soon.</span>
       </p>
 
-      {/* Product grid */}
+      {/* PRODUCT GRID */}
       {loadingProducts ? (
         <p className="text-gray-400">Loading your tracked items…</p>
       ) : products.length === 0 ? (
         <p className="text-gray-500">
-          You’re not tracking any products yet.
-          <br />
-          <span className="text-gray-400">
-            Paste a link above to start tracking!
-          </span>
+          You’re not tracking any products yet. <br />
+          <span className="text-gray-400">Paste a link above to start tracking!</span>
         </p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 text-left">
@@ -249,7 +233,6 @@ export default function HomePage() {
                   h-[340px]
                 "
               >
-                {/* Title */}
                 <div className="h-[52px] mb-2 overflow-hidden">
                   <p className="font-semibold text-[18px] text-gray-900 line-clamp-2 leading-tight">
                     {item.title?.trim() || "Loading…"}
@@ -258,7 +241,6 @@ export default function HomePage() {
 
                 <p className="text-sm text-gray-400 mb-1">{item.merchant}</p>
 
-                {/* Price */}
                 {item.latest_price !== null ? (
                   <p className="text-[26px] font-bold text-gray-900 mb-1">
                     {item.currency} {item.latest_price.toFixed(2)}
@@ -269,7 +251,6 @@ export default function HomePage() {
                   </p>
                 )}
 
-                {/* Timestamp */}
                 {item.seen_at && (
                   <p className="text-xs text-gray-400 italic mb-4">
                     Updated{" "}
@@ -280,7 +261,6 @@ export default function HomePage() {
                   </p>
                 )}
 
-                {/* Chart */}
                 <button
                   onClick={() => {
                     setSelectedProduct(item);
@@ -291,7 +271,6 @@ export default function HomePage() {
                   📈 View Price History
                 </button>
 
-                {/* Buttons */}
                 <div className="mt-auto flex gap-3">
                   <a
                     href={affiliateUrl}
@@ -331,13 +310,11 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Chart modal */}
+      {/* Price History Modal */}
       <Modal open={showChart} onClose={() => setShowChart(false)}>
         <h2 className="text-xl font-semibold mb-3">Price History</h2>
 
-        <PriceHistoryChart
-          snapshots={selectedProduct?.price_snapshots || []}
-        />
+        <PriceHistoryChart snapshots={selectedProduct?.price_snapshots || []} />
 
         <p className="mt-4 text-gray-400 text-xs text-center">
           Chart updates automatically as PriceScan collects more data.
