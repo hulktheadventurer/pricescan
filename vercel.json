@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/scan-prices",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/send-emails",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}
