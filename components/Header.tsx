@@ -1,28 +1,45 @@
-// components/Header.tsx
 "use client";
 
+import { useSupabaseClient, useUser } from "@supabase/auth-helpers-react";
 import Link from "next/link";
 
 export default function Header() {
+  const supabase = useSupabaseClient();
+  const user = useUser();
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    window.location.href = "/";
+  }
+
   return (
-    <header className="w-full border-b border-gray-200 bg-white">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-        {/* Logo / brand */}
-        <Link href="/" className="flex items-center gap-2">
-          <span className="text-2xl">🪙</span>
-          <span className="text-lg font-semibold tracking-tight text-blue-600">
-            PriceScan
-          </span>
+    <header className="w-full border-b bg-white">
+      <div className="max-w-6xl mx-auto flex justify-between items-center py-4 px-4">
+
+        <Link href="/" className="text-xl font-semibold flex items-center space-x-2">
+          <span role="img">💰</span>
+          <span>PriceScan</span>
         </Link>
 
-        {/* Simple links only – no Home / Track / Admin / Sign Out */}
-        <nav className="flex items-center gap-4 text-sm text-gray-600">
-          <Link href="/privacy" className="hover:text-blue-600">
+        <nav className="flex items-center space-x-6 text-sm text-gray-700">
+          <Link href="/privacy" className="hover:underline">
             Privacy
           </Link>
-          <Link href="/terms" className="hover:text-blue-600">
+          <Link href="/terms" className="hover:underline">
             Terms
           </Link>
+
+          {user && (
+            <>
+              <span className="text-gray-500">{user.email}</span>
+              <button 
+                onClick={signOut} 
+                className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded"
+              >
+                Sign Out
+              </button>
+            </>
+          )}
         </nav>
       </div>
     </header>
