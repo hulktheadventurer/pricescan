@@ -1,11 +1,20 @@
 "use client";
 
-import { useSupabaseClient, useUser } from "@supabase/auth-helpers-react";
 import Link from "next/link";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { useEffect, useState } from "react";
 
 export default function Header() {
-  const supabase = useSupabaseClient();
-  const user = useUser();
+  const supabase = createClientComponentClient();
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    const loadUser = async () => {
+      const { data } = await supabase.auth.getUser();
+      setUser(data.user);
+    };
+    loadUser();
+  }, []);
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -16,31 +25,30 @@ export default function Header() {
     <header className="w-full border-b bg-white">
       <div className="max-w-6xl mx-auto flex justify-between items-center py-4 px-4">
 
+        {/* Logo */}
         <Link href="/" className="text-xl font-semibold flex items-center space-x-2">
-          <span role="img">💰</span>
+          <span role="img">📈</span>
           <span>PriceScan</span>
         </Link>
 
+        {/* Right side */}
         <nav className="flex items-center space-x-6 text-sm text-gray-700">
-          <Link href="/privacy" className="hover:underline">
-            Privacy
-          </Link>
-          <Link href="/terms" className="hover:underline">
-            Terms
-          </Link>
+          <Link href="/privacy" className="hover:underline">Privacy</Link>
+          <Link href="/terms" className="hover:underline">Terms</Link>
 
           {user && (
             <>
-              <span className="text-gray-500">{user.email}</span>
-              <button 
-                onClick={signOut} 
-                className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded"
+              <span className="text-gray-600">{user.email}</span>
+              <button
+                onClick={signOut}
+                className="text-red-600 hover:underline"
               >
                 Sign Out
               </button>
             </>
           )}
         </nav>
+
       </div>
     </header>
   );
