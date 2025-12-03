@@ -10,6 +10,7 @@ import {
   CurrencyCode,
   convertCurrency,
   isSupportedCurrency,
+  SUPPORTED_CURRENCIES,
 } from "@/lib/currency";
 
 export default function HomePage() {
@@ -21,75 +22,62 @@ export default function HomePage() {
   const [products, setProducts] = useState<any[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
 
-  // Controlled by header via custom event
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
   const [showChart, setShowChart] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
 
-  // Listen for header currency updates
+  // Listen to header currency updates
   useEffect(() => {
-    function handler(e: any) {
-      const code = e.detail as CurrencyCode;
-      setDisplayCurrency(code);
-    }
-
-    window.addEventListener("pricescan-currency-update", handler);
-    return () => window.removeEventListener("pricescan-currency-update", handler);
-  }, []);
-
-  // Load currency + products once on startup
-  useEffect(() => {
-    const load = async () => {
-      const { data: userData } = await supabase.auth.getUser();
-      const user = userData?.user;
-
-      if (user) {
-        const { data } = await supabase
-          .from("user_profile")
-          .select("currency")
-          .eq("user_id", user.id)
-          .maybeSingle();
-
-        if (data?.currency && isSupportedCurrency(data.currency)) {
-          setDisplayCurrency(data.currency);
-        }
-      }
-
-      await loadProducts();
+    const handler = (e: any) => {
+      setDisplayCurrency(e.detail);
     };
-
-    load();
+    window.addEventListener("pricescan-currency-update", handler);
+    return () =>
+      window.removeEventListener("pricescan-currency-update", handler);
   }, []);
 
-  // Load tracked products
+  // Load products on first load
+  useEffect(() => {
+    loadProducts();
+  }, []);
+
   async function loadProducts() {
     setLoadingProducts(true);
 
     try {
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
-      if (!user) return;
+      if (!user) {
+        setProducts([]);
+        setLoadingProducts(false);
+        return;
+      }
 
       const { data, error } = await supabase
         .from("tracked_products")
-        .select(`
-          id,
-          title,
-          url,
-          merchant,
-          locale,
-          sku,
-          status,
-          price_snapshots!inner (
-            price,
-            currency,
-            seen_at
-          )
-        `)
+        .select(
+          `
+            id,
+            title,
+            url,
+            merchant,
+            locale,
+            sku,
+            status,
+            price_snapshots!inner (
+              price,
+              currency,
+              seen_at
+            )
+        `
+        )
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
-        .order("seen_at", { foreignTable: "price_snapshots", ascending: false });
+        .order("seen_at", {
+          foreignTable: "price_snapshots",
+          ascending: false,
+        });
 
       if (error) throw error;
 
@@ -129,7 +117,11 @@ export default function HomePage() {
     try {
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
-      if (!user) return toast.error("Please sign in first.");
+      if (!user) {
+        toast.error("Please sign in first.");
+        setLoading(false);
+        return;
+      }
 
       const res = await fetch("/api/track", {
         method: "POST",
@@ -138,10 +130,9 @@ export default function HomePage() {
       });
 
       const result = await res.json();
-
       if (!res.ok) throw new Error(result.error);
 
-      toast.success("Product added!");
+      toast.success("🎉 Product added!");
       setUrl("");
       loadProducts();
     } catch (err: any) {
@@ -151,7 +142,7 @@ export default function HomePage() {
     }
   }
 
-  // Delete tracked product
+  // Delete item
   async function handleDelete(id: string) {
     if (!confirm("Remove this item?")) return;
 
@@ -160,20 +151,21 @@ export default function HomePage() {
       .delete()
       .eq("id", id);
 
-    if (!error) {
-      toast.success("Removed.");
-      setProducts((prev) => prev.filter((p) => p.id !== id));
+    if (error) toast.error("Delete failed");
+    else {
+      toast.success("Removed");
+      setProducts((p) => p.filter((x) => x.id !== id));
     }
   }
 
   return (
     <main className="max-w-6xl mx-auto px-4 py-10 text-center">
 
-      <h1 className="text-3xl font-bold mb-4 text-blue-600">
+      <h1 className="text-3xl font-bold mb-6 text-blue-600">
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      {/* Track form */}
+      {/* Track input */}
       <form
         onSubmit={handleTrack}
         className="flex flex-col md:flex-row gap-3 w-full max-w-xl mx-auto mb-8"
@@ -195,7 +187,6 @@ export default function HomePage() {
         </button>
       </form>
 
-      {/* Product Grid */}
       {loadingProducts ? (
         <p className="text-gray-400">Loading…</p>
       ) : products.length === 0 ? (
@@ -207,7 +198,7 @@ export default function HomePage() {
 
             const hasPrice = item.latest_price !== null;
 
-            // Currency conversion
+            // Convert currency
             let displayPrice = item.latest_price;
             let displayCode = item.currency;
 
@@ -226,10 +217,14 @@ export default function HomePage() {
 
             // Price drop block
             let priceDropBlock = null;
+
             if (item.price_snapshots.length > 1) {
               const latest = item.price_snapshots[0].price;
+
               const prevLow = Math.min(
-                ...item.price_snapshots.slice(1).map((s) => s.price)
+                ...item.price_snapshots
+                  .slice(1)
+                  .map((s: { price: number }) => s.price)
               );
 
               if (latest < prevLow) {
@@ -280,14 +275,14 @@ export default function HomePage() {
                     {priceDropBlock}
 
                     {displayCode !== item.currency && (
-                      <p className="text-xs text-gray-400 mb-1">
+                      <p className="text-xs text-gray-500 mb-1">
                         Original currency: {item.currency}{" "}
                         {item.latest_price.toFixed(2)}
                       </p>
                     )}
                   </>
                 ) : (
-                  <p className="text-sm text-blue-500 animate-pulse">
+                  <p className="text-sm text-blue-500 animate-pulse mb-1">
                     Fetching price…
                   </p>
                 )}
