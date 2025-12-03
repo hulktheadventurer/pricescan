@@ -4,7 +4,8 @@ import { supabaseAdmin } from "@/lib/supabaseServer";
 import { getEbayAffiliateLink } from "@/lib/affiliates/ebay";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY!;
-const EMAIL_FROM = process.env.EMAIL_FROM || "PriceScan <alerts@pricescan.ai>";
+const EMAIL_FROM =
+  process.env.EMAIL_FROM || "PriceScan <alerts@pricescan.ai>";
 
 async function sendEmail(to: string, subject: string, html: string) {
   if (!RESEND_API_KEY) {
@@ -22,15 +23,14 @@ async function sendEmail(to: string, subject: string, html: string) {
   });
 }
 
-
-// ---------- PRICE DROP EMAIL ----------
+/* -------------------- PRICE DROP EMAIL -------------------- */
 function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
   const diff = oldPrice - newPrice;
   const pct = (diff / oldPrice) * 100;
   const affiliateUrl = getEbayAffiliateLink(item.url);
 
   return `
-  <div style="font-family: system-ui; padding: 16px;">
+  <div style="font-family: system-ui; padding:16px;">
     <h2>📉 Price dropped!</h2>
     <p>Your tracked item just hit a new low:</p>
 
@@ -43,30 +43,23 @@ function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
     </p>
 
     <a href="${affiliateUrl}"
-      style="
-        display:inline-block;
-        background:#2563eb;
-        color:white;
-        padding:10px 18px;
-        border-radius:50px;
-        text-decoration:none;
-        font-weight:600;">
+       style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;
+              border-radius:50px;text-decoration:none;font-weight:600;">
       View on eBay
     </a>
 
-    <p style="margin-top:24px; font-size:12px; color:#999;">
+    <p style="margin-top:24px;font-size:12px;color:#999;">
       You are receiving this email because you track this item on PriceScan.
     </p>
   </div>`;
 }
 
-
-// ---------- RESTOCK EMAIL ----------
+/* -------------------- RESTOCK EMAIL -------------------- */
 function buildRestockEmail(item: any) {
   const affiliateUrl = getEbayAffiliateLink(item.url);
 
   return `
-  <div style="font-family: system-ui; padding: 16px;">
+  <div style="font-family: system-ui; padding:16px;">
     <h2>🔔 Back in stock!</h2>
     <p>Your tracked item is available again:</p>
 
@@ -75,35 +68,30 @@ function buildRestockEmail(item: any) {
     <p>It was previously sold out, but it's now ACTIVE again.</p>
 
     <a href="${affiliateUrl}"
-      style="
-        display:inline-block;
-        background:#16a34a;
-        color:white;
-        padding:10px 18px;
-        border-radius:50px;
-        text-decoration:none;
-        font-weight:600;">
+       style="display:inline-block;background:#16a34a;color:white;padding:10px 18px;
+              border-radius:50px;text-decoration:none;font-weight:600;">
       View on eBay
     </a>
 
-    <p style="margin-top:24px; font-size:12px; color:#999;">
+    <p style="margin-top:24px;font-size:12px;color:#999;">
       You are receiving this email because you track this item on PriceScan.
     </p>
   </div>`;
 }
 
-
-// Escape HTML
+/* -------------------- HTML Escape -------------------- */
 function escape(str: string) {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
-
-// ---------- MAIN CRON ----------
+/* -------------------- MAIN CRON -------------------- */
 export async function GET() {
   const startedAt = new Date().toISOString();
 
-  // 1) Get all pending alerts
+  // 1) Get pending alerts
   const { data: alerts, error: alertErr } = await supabaseAdmin
     .from("cron_alert_queue")
     .select("*")
@@ -116,30 +104,33 @@ export async function GET() {
     return NextResponse.json({ ok: false });
   }
 
-  if (!alerts?.length) {
+  if (!alerts?.length)
     return NextResponse.json({ ok: true, startedAt, processed: 0 });
-  }
 
   let processed = 0;
 
   for (const alert of alerts) {
     try {
-      // 2) Fetch product + user
+      /* -------------------- PRODUCT LOOKUP -------------------- */
       const { data: product } = await supabaseAdmin
         .from("tracked_products")
         .select("id, title, url, user_id, status, sku")
         .eq("id", alert.product_id)
         .single();
 
-      const { data: user } = await supabaseAdmin
+      // TS Fix: If product missing → skip
+      if (!product) continue;
+
+      /* -------------------- USER LOOKUP -------------------- */
+      const { data: user, error: userErr } = await supabaseAdmin
         .from("auth.users")
         .select("email")
         .eq("id", product.user_id)
         .single();
 
-      if (!user?.email) continue;
+      if (userErr || !user?.email) continue;
 
-      // 3) Price drop alert
+      /* -------------------- PRICE DROP -------------------- */
       if (alert.type === "PRICE_DROP") {
         const { data: snaps } = await supabaseAdmin
           .from("price_snapshots")
@@ -147,21 +138,21 @@ export async function GET() {
           .eq("product_id", product.id)
           .order("seen_at", { ascending: false });
 
-        if (snaps.length < 2) continue;
+        if (!snaps || snaps.length < 2) continue;
 
         const latest = snaps[0].price;
-        const prevLow = Math.min(...snaps.slice(1).map((s) => s.price));
+        const previousLow = Math.min(...snaps.slice(1).map((s) => s.price));
 
-        if (latest < prevLow) {
+        if (latest < previousLow) {
           await sendEmail(
             user.email,
             `📉 Price dropped: ${product.title}`,
-            buildPriceDropEmail(product, prevLow, latest)
+            buildPriceDropEmail(product, previousLow, latest)
           );
         }
       }
 
-      // 4) Restock alert
+      /* -------------------- RESTOCK -------------------- */
       if (alert.type === "RESTOCK") {
         await sendEmail(
           user.email,
@@ -170,7 +161,7 @@ export async function GET() {
         );
       }
 
-      // 5) Mark alert as processed
+      /* -------------------- MARK AS PROCESSED -------------------- */
       await supabaseAdmin
         .from("cron_alert_queue")
         .update({ processed: true })
@@ -182,9 +173,5 @@ export async function GET() {
     }
   }
 
-  return NextResponse.json({
-    ok: true,
-    startedAt,
-    processed,
-  });
+  return NextResponse.json({ ok: true, startedAt, processed });
 }
