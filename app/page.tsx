@@ -10,6 +10,7 @@ import {
   CurrencyCode,
   convertCurrency,
   isSupportedCurrency,
+  SUPPORTED_CURRENCIES,
 } from "@/lib/currency";
 
 export default function HomePage() {
@@ -21,42 +22,55 @@ export default function HomePage() {
   const [showChart, setShowChart] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
 
-  const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
+  const [displayCurrency, setDisplayCurrency] =
+    useState<CurrencyCode>("GBP");
 
   const supabase = createClientComponentClient();
 
   function detectMerchant(link: string) {
     if (link.includes("ebay.")) return "ebay";
-    if (link.includes("amazon.")) return "amazon";
     return "unknown";
   }
 
-  // Load currency preference + products
+  // Load user currency + products
   useEffect(() => {
     const load = async () => {
-      // 1) Load user + preferred currency
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
 
       if (user) {
-        const { data, error } = await supabase
+        const { data } = await supabase
           .from("user_profile")
           .select("currency")
           .eq("user_id", user.id)
           .maybeSingle();
 
-        if (!error && data?.currency && isSupportedCurrency(data.currency)) {
+        if (data?.currency && isSupportedCurrency(data.currency)) {
           setDisplayCurrency(data.currency as CurrencyCode);
         }
       }
 
-      // 2) Load products
-      await loadProducts();
+      loadProducts();
     };
 
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Save currency immediately + re-render
+  async function handleCurrencyChange(code: CurrencyCode) {
+    setDisplayCurrency(code);
+
+    const { data: userData } = await supabase.auth.getUser();
+    const user = userData?.user;
+    if (!user) return;
+
+    await supabase
+      .from("user_profile")
+      .upsert({ user_id: user.id, currency: code });
+
+    toast.success(`Currency updated to ${code}`);
+  }
 
   async function loadProducts() {
     setLoadingProducts(true);
@@ -75,18 +89,21 @@ export default function HomePage() {
         .from("tracked_products")
         .select(
           `
-          id,
-          title,
-          url,
-          merchant,
-          locale,
-          sku,
-          price_snapshots!inner (
-            price,
-            currency,
-            seen_at
-          )
-        `
+            id,
+            title,
+            url,
+            merchant,
+            locale,
+            sku,
+            is_sold_out,
+            is_ended,
+            status_message,
+            price_snapshots!inner (
+              price,
+              currency,
+              seen_at
+            )
+          `
         )
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
@@ -101,7 +118,8 @@ export default function HomePage() {
         const snaps = item.price_snapshots || [];
         snaps.sort(
           (a: any, b: any) =>
-            new Date(b.seen_at).getTime() - new Date(a.seen_at).getTime()
+            new Date(b.seen_at).getTime() -
+            new Date(a.seen_at).getTime()
         );
         const last = snaps[0] ?? null;
 
@@ -126,20 +144,21 @@ export default function HomePage() {
   // Track product
   async function handleTrack(e: React.FormEvent) {
     e.preventDefault();
-    if (!url.trim()) return toast.error("Please paste a product link first.");
+    if (!url.trim()) return toast.error("Paste a link first.");
 
     setLoading(true);
 
     try {
       const merchant = detectMerchant(url);
       if (merchant !== "ebay") {
-        toast.warning("Supports eBay only. Amazon & AliExpress coming soon!");
+        toast.warning("Supports eBay only. Amazon & AliExpress soon!");
         setLoading(false);
         return;
       }
 
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
+
       if (!user) {
         toast.error("Please sign in first.");
         setLoading(false);
@@ -157,7 +176,7 @@ export default function HomePage() {
       if (!res.ok) {
         if (result.error === "GROUP_LISTING") {
           toast.warning(
-            "This listing has variations. Select a specific model/colour/storage and paste that URL instead."
+            "This listing has variations — please pick a specific option."
           );
           return;
         }
@@ -168,14 +187,13 @@ export default function HomePage() {
       setUrl("");
       loadProducts();
     } catch (err: any) {
-      console.error("❌ Add product failed:", err.message);
-      toast.error(err.message || "Could not start tracking.");
+      toast.error(err.message || "Tracking failed.");
     } finally {
       setLoading(false);
     }
   }
 
-  // Delete tracked product
+  // Delete product
   async function handleDelete(id: string) {
     if (!confirm("Stop tracking this item?")) return;
 
@@ -184,9 +202,8 @@ export default function HomePage() {
       .delete()
       .eq("id", id);
 
-    if (error) {
-      toast.error("Delete failed.");
-    } else {
+    if (error) toast.error("Delete failed.");
+    else {
       toast.success("Tracking stopped.");
       setProducts((prev) => prev.filter((p) => p.id !== id));
     }
@@ -197,6 +214,23 @@ export default function HomePage() {
       <h1 className="text-3xl font-bold mb-4 text-blue-600">
         🔎 PriceScan — Track Product Prices Instantly
       </h1>
+
+      {/* Currency Selector */}
+      <div className="mb-6">
+        <select
+          className="border p-2 rounded-md shadow-sm"
+          value={displayCurrency}
+          onChange={(e) =>
+            handleCurrencyChange(e.target.value as CurrencyCode)
+          }
+        >
+          {SUPPORTED_CURRENCIES.sort().map((code) => (
+            <option key={code} value={code}>
+              {code}
+            </option>
+          ))}
+        </select>
+      </div>
 
       {/* Input */}
       <form
@@ -221,20 +255,13 @@ export default function HomePage() {
         </button>
       </form>
 
-      <p className="text-gray-500 text-sm mb-10">
-        Works with <b>eBay</b> today.
-        <br />
-        <span className="text-gray-400">
-          Amazon & AliExpress coming soon.
-        </span>
-      </p>
-
-      {/* Product grid */}
+      {/* Product Grid */}
       {loadingProducts ? (
         <p className="text-gray-400">Loading your tracked items…</p>
       ) : products.length === 0 ? (
         <p className="text-gray-500">
-          You’re not tracking any products yet. <br />
+          You’re not tracking any products yet.
+          <br />
           <span className="text-gray-400">
             Paste a link above to start tracking!
           </span>
@@ -247,7 +274,9 @@ export default function HomePage() {
             const hasPrice = item.latest_price !== null;
 
             let displayCode: string = item.currency || "GBP";
-            let displayPrice: number | null = hasPrice ? item.latest_price : null;
+            let displayPrice: number | null = hasPrice
+              ? item.latest_price
+              : null;
 
             if (
               hasPrice &&
@@ -263,32 +292,32 @@ export default function HomePage() {
               displayCode = displayCurrency;
             }
 
+            const statusLabel =
+              item.is_ended
+                ? "Listing Ended"
+                : item.is_sold_out
+                ? "Sold Out"
+                : null;
+
             return (
               <div
                 key={item.id}
-                className="
-                  bg-white 
-                  rounded-2xl 
-                  shadow-sm 
-                  border 
-                  border-gray-100 
-                  hover:shadow-lg 
-                  transition-all 
-                  p-6 
-                  flex 
-                  flex-col 
-                  justify-between 
-                  h-[360px]
-                "
+                className="bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-lg transition-all p-6 flex flex-col justify-between h-[380px]"
               >
-                {/* Title with fixed height */}
+                {/* Status Badge */}
+                {statusLabel && (
+                  <span className="inline-block bg-red-500 text-white px-2 py-1 rounded-md text-xs font-semibold mb-2">
+                    {statusLabel}
+                  </span>
+                )}
+
+                {/* Title */}
                 <div className="h-[52px] mb-2 overflow-hidden">
                   <p className="font-semibold text-[18px] text-gray-900 line-clamp-2 leading-tight">
                     {item.title?.trim() || "Loading…"}
                   </p>
                 </div>
 
-                {/* Merchant */}
                 <p className="text-sm text-gray-400 mb-1">
                   {item.merchant || "ebay"}
                 </p>
@@ -324,7 +353,7 @@ export default function HomePage() {
                   </p>
                 )}
 
-                {/* Price history button */}
+                {/* Price History */}
                 <button
                   onClick={() => {
                     setSelectedProduct(item);
@@ -335,36 +364,33 @@ export default function HomePage() {
                   📈 View Price History
                 </button>
 
-                {/* Bottom buttons */}
+                {/* Buttons */}
                 <div className="mt-auto flex gap-3">
                   <a
                     href={affiliateUrl}
                     target="_blank"
-                    className="
-                      flex-1 
-                      text-center 
-                      bg-blue-600 
-                      text-white 
-                      py-2 
-                      rounded-lg 
-                      hover:bg-blue-700 
-                      transition
-                    "
+                    className={`flex-1 text-center py-2 rounded-lg transition ${
+                      item.is_ended || item.is_sold_out
+                        ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                        : "bg-blue-600 text-white hover:bg-blue-700"
+                    }`}
+                    onClick={(e) => {
+                      if (item.is_ended || item.is_sold_out) {
+                        e.preventDefault();
+                        toast.error(
+                          item.is_ended
+                            ? "This listing has ended."
+                            : "This item is sold out."
+                        );
+                      }
+                    }}
                   >
                     View
                   </a>
 
                   <button
                     onClick={() => handleDelete(item.id)}
-                    className="
-                      flex-1 
-                      bg-gray-200 
-                      text-gray-700 
-                      py-2 
-                      rounded-lg 
-                      hover:bg-gray-300 
-                      transition
-                    "
+                    className="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg hover:bg-gray-300 transition"
                   >
                     Remove
                   </button>

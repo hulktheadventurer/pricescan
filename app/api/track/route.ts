@@ -1,4 +1,3 @@
-// app/api/track/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseServer";
 import { getEbayAccessToken } from "@/lib/ebay-auth";
@@ -10,18 +9,16 @@ function extractId(input: string): string | null {
   // If user just types the ID (9+ digits)
   if (/^\d{9,}$/.test(input)) return input;
 
-  // Try to parse as URL
   try {
     const url = new URL(input);
     const m = url.pathname.match(/(\d{9,})/);
     if (m) return m[1];
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   return null;
 }
 
+// Fetch from eBay
 async function fetchEbayItem(id: string) {
   const token = await getEbayAccessToken();
 
@@ -34,23 +31,36 @@ async function fetchEbayItem(id: string) {
     }
   );
 
+  const text = await res.text();
   if (!res.ok) {
-    const text = await res.text();
-    console.error("❌ eBay API error:", text);
+    console.error("❌ eBay API ERROR:", text);
     return null;
   }
 
-  const data = await res.json();
+  const data = JSON.parse(text);
+
+  // Detect sold out / ended
+  const isEnded = !!data.itemEndDate;
+  const isSoldOut =
+    data.availability?.availabilityStatus === "OUT_OF_STOCK" ||
+    data.availability?.availabilityStatus === "UNAVAILABLE";
+
+  let statusMessage = null;
+  if (isEnded) statusMessage = "Listing ended";
+  else if (isSoldOut) statusMessage = "Out of stock";
 
   return {
     title: data.title ?? "Unknown eBay Item",
     price: Number(data.price?.value ?? 0),
     currency: data.price?.currency ?? "GBP",
+    isSoldOut,
+    isEnded,
+    statusMessage,
     raw: data,
   };
 }
 
-// Optional GET for debugging: /api/track?id=... or /api/track?url=...
+// GET for debugging
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const input = url.searchParams.get("id") || url.searchParams.get("url");
@@ -62,22 +72,17 @@ export async function GET(req: NextRequest) {
 
   const item = await fetchEbayItem(id);
   if (!item) {
-    return NextResponse.json(
-      { error: "Failed to fetch from eBay" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to fetch from eBay" }, { status: 500 });
   }
 
   return NextResponse.json({
     success: true,
     id,
-    title: item.title,
-    price: item.price,
-    currency: item.currency,
+    ...item,
   });
 }
 
-// Main endpoint used by HomePage -> handleTrack()
+// POST used by /page.tsx
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const input = body.id || body.url;
@@ -95,7 +100,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 1) Fetch live price & title from eBay
+  // 1) Fetch eBay data
   const item = await fetchEbayItem(id);
   if (!item) {
     return NextResponse.json(
@@ -104,9 +109,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const urlToSave = input; // original URL from the user
+  const urlToSave = input;
 
-  // 2) Check if user already tracks this exact URL
+  // 2) Check if user already tracks this URL
   const existing = await supabaseAdmin
     .from("tracked_products")
     .select("id")
@@ -117,10 +122,10 @@ export async function POST(req: NextRequest) {
   let productId: string;
 
   if (existing.data) {
-    // Already tracked: just add a fresh snapshot
-    productId = existing.data.id as string;
+    // Already exists
+    productId = existing.data.id;
   } else {
-    // 3) Insert new tracked_products row
+    // 3) Insert new product
     const { data: inserted, error: insertError } = await supabaseAdmin
       .from("tracked_products")
       .insert({
@@ -129,34 +134,35 @@ export async function POST(req: NextRequest) {
         title: item.title,
         merchant: "ebay",
         locale: "GB",
-        sku: id, // store legacy id as sku
+        sku: id,
+        is_sold_out: item.isSoldOut,
+        is_ended: item.isEnded,
+        status_message: item.statusMessage,
       })
       .select()
       .single();
 
     if (insertError || !inserted) {
-      console.error("❌ Supabase tracked_products insert error:", insertError);
-      return NextResponse.json(
-        { error: "Failed to save item" },
-        { status: 500 }
-      );
+      console.error("❌ Supabase insert error:", insertError);
+      return NextResponse.json({ error: "Failed to save item" }, { status: 500 });
     }
 
     productId = inserted.id;
   }
 
-  // 4) Insert initial price snapshot
-  const { error: snapError } = await supabaseAdmin
-    .from("price_snapshots")
-    .insert({
-      product_id: productId,
-      price: item.price,
-      currency: item.currency,
-    });
+  // 4) Insert price snapshot only if item is NOT sold-out/ended
+  if (!item.isSoldOut && !item.isEnded) {
+    const { error: snapError } = await supabaseAdmin
+      .from("price_snapshots")
+      .insert({
+        product_id: productId,
+        price: item.price,
+        currency: item.currency,
+      });
 
-  if (snapError) {
-    console.error("❌ Supabase price_snapshots insert error:", snapError);
-    // not fatal for the client – tracking still exists
+    if (snapError) {
+      console.error("❌ Supabase price_snapshots insert error:", snapError);
+    }
   }
 
   return NextResponse.json({

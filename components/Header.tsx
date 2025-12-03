@@ -99,13 +99,6 @@ export default function Header() {
             </div>
           )}
 
-          {/* Legal links */}
-          <Link href="/privacy" className="hover:underline">
-            Privacy
-          </Link>
-          <Link href="/terms" className="hover:underline">
-            Terms
-          </Link>
 
           {/* User info */}
           {user && (
