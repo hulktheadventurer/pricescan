@@ -6,10 +6,8 @@ import { toast } from "sonner";
 import { getEbayAffiliateLink } from "@/lib/affiliates/ebay";
 import Modal from "@/components/Modal";
 import PriceHistoryChart from "@/components/PriceHistoryChart";
-
 import {
   CurrencyCode,
-  SUPPORTED_CURRENCIES,
   convertCurrency,
   isSupportedCurrency,
 } from "@/lib/currency";
@@ -17,38 +15,36 @@ import {
 export default function HomePage() {
   const supabase = createClientComponentClient();
 
-  // ============================
-  // UI + data state
-  // ============================
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
+
   const [products, setProducts] = useState<any[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
 
-  const [displayCurrency, setDisplayCurrency] =
-    useState<CurrencyCode>("GBP");
+  const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
   const [showChart, setShowChart] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
 
-  // ============================
-  // Detect merchant
-  // ============================
-  function detectMerchant(link: string) {
-    if (link.includes("ebay.")) return "ebay";
-    if (link.includes("amazon.")) return "amazon";
-    return "unknown";
-  }
 
-  // ============================
-  // Load user currency + products at startup
-  // ============================
+  // 🔥 Listen for currency updates broadcasted from Header.tsx
+  useEffect(() => {
+    function handler(e: any) {
+      setDisplayCurrency(e.detail);
+    }
+
+    window.addEventListener("pricescan-currency-update", handler);
+    return () =>
+      window.removeEventListener("pricescan-currency-update", handler);
+  }, []);
+
+
+  // Load user currency + products
   useEffect(() => {
     const load = async () => {
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
 
-      // Load currency preference
       if (user) {
         const { data } = await supabase
           .from("user_profile")
@@ -56,87 +52,51 @@ export default function HomePage() {
           .eq("user_id", user.id)
           .maybeSingle();
 
-        if (data?.currency && isSupportedCurrency(data.currency)) {
-          setDisplayCurrency(data.currency as CurrencyCode);
-        }
+        if (data?.currency && isSupportedCurrency(data.currency))
+          setDisplayCurrency(data.currency);
       }
 
       await loadProducts();
     };
 
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ============================
-  // Save currency + instant auto-update
-  // ============================
-  async function handleCurrencyChange(code: CurrencyCode) {
-    setDisplayCurrency(code);
 
-    const { data: userData } = await supabase.auth.getUser();
-    const user = userData?.user;
-    if (!user) return;
-
-    // Save preference
-    await supabase.from("user_profile").upsert({
-      user_id: user.id,
-      currency: code,
-    });
-
-    // 🔥 Immediately re-render prices without refresh
-    await loadProducts();
-
-    toast.success(`Currency updated to ${code}`);
-  }
-
-  // ============================
   // Load tracked products
-  // ============================
   async function loadProducts() {
     setLoadingProducts(true);
 
     try {
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
-
-      if (!user) {
-        setProducts([]);
-        setLoadingProducts(false);
-        return;
-      }
+      if (!user) return;
 
       const { data, error } = await supabase
         .from("tracked_products")
-        .select(
-          `
-        id,
-        title,
-        url,
-        merchant,
-        locale,
-        sku,
-        status,
-        price_snapshots!inner (
-          price,
-          currency,
-          seen_at
-        )
-      `
-        )
+        .select(`
+          id,
+          title,
+          url,
+          merchant,
+          locale,
+          sku,
+          status,
+          price_snapshots!inner (
+            price,
+            currency,
+            seen_at
+          )
+        `)
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
-        .order("seen_at", {
-          foreignTable: "price_snapshots",
-          ascending: false,
-        });
+        .order("seen_at", { foreignTable: "price_snapshots", ascending: false });
 
       if (error) throw error;
 
       const mapped = data.map((item: any) => {
-        const snaps = item.price_snapshots || [];
-        snaps.sort(
-          (a: any, b: any) =>
+        const snaps = [...item.price_snapshots].sort(
+          (a, b) =>
             new Date(b.seen_at).getTime() - new Date(a.seen_at).getTime()
         );
 
@@ -160,30 +120,18 @@ export default function HomePage() {
     setLoadingProducts(false);
   }
 
-  // ============================
+
   // Track product
-  // ============================
   async function handleTrack(e: React.FormEvent) {
     e.preventDefault();
-    if (!url.trim()) return toast.error("Paste a link first.");
+    if (!url.trim()) return toast.error("Please paste a product link.");
 
     setLoading(true);
 
     try {
-      const merchant = detectMerchant(url);
-      if (merchant !== "ebay") {
-        toast.warning("Supports eBay only. Amazon & AliExpress coming soon!");
-        setLoading(false);
-        return;
-      }
-
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
-      if (!user) {
-        toast.error("Please sign in.");
-        setLoading(false);
-        return;
-      }
+      if (!user) return toast.error("Please sign in first.");
 
       const res = await fetch("/api/track", {
         method: "POST",
@@ -193,76 +141,43 @@ export default function HomePage() {
 
       const result = await res.json();
 
-      if (!res.ok) {
-        if (result.error === "GROUP_LISTING") {
-          toast.warning(
-            "This listing has variations. Pick a specific colour/storage first."
-          );
-          return;
-        }
-        throw new Error(result.error);
-      }
+      if (!res.ok) throw new Error(result.error);
 
-      toast.success("🎉 Product added!");
+      toast.success("Product added!");
       setUrl("");
       loadProducts();
     } catch (err: any) {
-      toast.error(err.message || "Tracking failed.");
+      toast.error(err.message);
     } finally {
       setLoading(false);
     }
   }
 
-  // ============================
-  // Delete tracked item
-  // ============================
+
+  // Delete tracked product
   async function handleDelete(id: string) {
-    if (!confirm("Stop tracking this item?")) return;
+    if (!confirm("Remove this item?")) return;
 
     const { error } = await supabase
       .from("tracked_products")
       .delete()
       .eq("id", id);
 
-    if (error) toast.error("Delete failed.");
-    else {
-      toast.success("Tracking removed.");
+    if (!error) {
+      toast.success("Removed.");
       setProducts((prev) => prev.filter((p) => p.id !== id));
     }
   }
 
-  // ============================================================
-  // RENDER PAGE
-  // ============================================================
+
   return (
     <main className="max-w-6xl mx-auto px-4 py-10 text-center">
-
-      {/* ================= Header Currency Selector ================= */}
-      <div className="flex justify-end mb-4">
-        <div className="flex items-center gap-2">
-          <span className="text-gray-600 text-sm">Currency:</span>
-
-          <select
-            className="border p-2 rounded-md shadow-sm"
-            value={displayCurrency}
-            onChange={(e) =>
-              handleCurrencyChange(e.target.value as CurrencyCode)
-            }
-          >
-            {SUPPORTED_CURRENCIES.slice().sort().map((code) => (
-              <option key={code} value={code}>
-                {code}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
       <h1 className="text-3xl font-bold mb-4 text-blue-600">
         🔎 PriceScan — Track Product Prices Instantly
       </h1>
 
-      {/* ================= Tracking Input ================= */}
+
+      {/* Track form */}
       <form
         onSubmit={handleTrack}
         className="flex flex-col md:flex-row gap-3 w-full max-w-xl mx-auto mb-8"
@@ -272,47 +187,38 @@ export default function HomePage() {
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="Paste an eBay product link..."
-          className="flex-1 p-3 border rounded-md shadow-sm bg-white focus:ring-2 focus:ring-blue-500"
-          required
+          className="flex-1 p-3 border rounded-md shadow-sm"
         />
 
         <button
           type="submit"
           disabled={loading}
-          className="px-6 py-3 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:opacity-60"
+          className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700"
         >
           {loading ? "Tracking..." : "Track"}
         </button>
       </form>
 
-      <p className="text-gray-500 text-sm mb-10">
-        Works with <b>eBay</b> today. <br />
-        <span className="text-gray-400">Amazon & AliExpress coming soon.</span>
-      </p>
 
-      {/* ================= Product Grid ================= */}
+      {/* Product Grid */}
       {loadingProducts ? (
-        <p className="text-gray-400">Loading your tracked items…</p>
+        <p className="text-gray-400">Loading…</p>
       ) : products.length === 0 ? (
-        <p className="text-gray-500">
-          You’re not tracking any products yet. <br />
-          <span className="text-gray-400">
-            Paste a link above to start tracking!
-          </span>
-        </p>
+        <p className="text-gray-500">No items yet — start tracking!</p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 text-left">
-
           {products.map((item) => {
             const affiliateUrl = getEbayAffiliateLink(item.url);
+
             const hasPrice = item.latest_price !== null;
 
-            let displayCode = item.currency;
+            // Convert if needed
             let displayPrice = item.latest_price;
+            let displayCode = item.currency;
 
             if (
               hasPrice &&
-              isSupportedCurrency(displayCurrency) &&
+              isSupportedCurrency(item.currency) &&
               item.currency !== displayCurrency
             ) {
               displayPrice = convertCurrency(
@@ -323,27 +229,61 @@ export default function HomePage() {
               displayCode = displayCurrency;
             }
 
+            // PRICE DROP CALCULATION
+            let priceDropBlock = null;
+            if (item.price_snapshots.length > 1) {
+              const latest = item.price_snapshots[0].price;
+              const prevLow = Math.min(
+                ...item.price_snapshots.slice(1).map((s) => s.price)
+              );
+
+              if (latest < prevLow) {
+                const diff = prevLow - latest;
+                const pct = (diff / prevLow) * 100;
+
+                priceDropBlock = (
+                  <p className="text-sm text-green-600 font-semibold mb-2">
+                    📉 Price dropped: {displayCode} {diff.toFixed(2)}
+                    {" ("}-{pct.toFixed(1)}%)
+                  </p>
+                );
+              }
+            }
+
+
             return (
               <div
                 key={item.id}
-                className="bg-white rounded-2xl shadow-sm border border-gray-100 hover:shadow-lg transition p-6 flex flex-col justify-between h-[360px]"
+                className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col"
               >
                 {/* Title */}
                 <div className="h-[52px] mb-2 overflow-hidden">
-                  <p className="font-semibold text-[18px] text-gray-900 line-clamp-2 leading-tight">
-                    {item.title?.trim() || "Loading..."}
+                  <p className="font-semibold text-[18px] line-clamp-2">
+                    {item.title}
                   </p>
                 </div>
 
-                {/* Merchant */}
-                <p className="text-sm text-gray-400 mb-1">{item.merchant}</p>
+                {/* Status badges */}
+                {item.status === "SOLD_OUT" && (
+                  <span className="inline-block mb-2 px-2 py-1 text-xs font-semibold bg-red-100 text-red-700 rounded">
+                    SOLD OUT
+                  </span>
+                )}
 
-                {/* Pricing */}
+                {item.status === "ENDED" && (
+                  <span className="inline-block mb-2 px-2 py-1 text-xs font-semibold bg-gray-200 text-gray-600 rounded">
+                    LISTING ENDED
+                  </span>
+                )}
+
+                {/* Price */}
                 {hasPrice ? (
                   <>
                     <p className="text-[26px] font-bold text-gray-900 mb-1">
-                      {displayCode} {displayPrice!.toFixed(2)}
+                      {displayCode} {displayPrice.toFixed(2)}
                     </p>
+
+                    {priceDropBlock}
 
                     {displayCode !== item.currency && (
                       <p className="text-xs text-gray-400 mb-1">
@@ -353,14 +293,14 @@ export default function HomePage() {
                     )}
                   </>
                 ) : (
-                  <p className="text-sm text-blue-500 mb-1 animate-pulse">
+                  <p className="text-sm text-blue-500 animate-pulse">
                     Fetching price…
                   </p>
                 )}
 
                 {/* Timestamp */}
                 {item.seen_at && (
-                  <p className="text-xs text-gray-400 italic mb-3">
+                  <p className="text-xs text-gray-400 italic mb-4">
                     Updated{" "}
                     {new Date(item.seen_at).toLocaleString("en-GB", {
                       dateStyle: "medium",
@@ -369,13 +309,13 @@ export default function HomePage() {
                   </p>
                 )}
 
-                {/* Price History */}
+                {/* Price history */}
                 <button
                   onClick={() => {
                     setSelectedProduct(item);
                     setShowChart(true);
                   }}
-                  className="text-blue-600 font-medium hover:underline text-sm mb-4 text-left"
+                  className="text-blue-600 text-sm mb-4 hover:underline"
                 >
                   📈 View Price History
                 </button>
@@ -385,14 +325,14 @@ export default function HomePage() {
                   <a
                     href={affiliateUrl}
                     target="_blank"
-                    className="flex-1 text-center bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition"
+                    className="flex-1 text-center bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700"
                   >
                     View
                   </a>
 
                   <button
                     onClick={() => handleDelete(item.id)}
-                    className="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg hover:bg-gray-300 transition"
+                    className="flex-1 bg-gray-200 text-gray-700 py-2 rounded-md hover:bg-gray-300"
                   >
                     Remove
                   </button>
@@ -403,17 +343,12 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* ================= Price History Modal ================= */}
+      {/* Price History Modal */}
       <Modal open={showChart} onClose={() => setShowChart(false)}>
         <h2 className="text-xl font-semibold mb-3">Price History</h2>
-
         <PriceHistoryChart
           snapshots={selectedProduct?.price_snapshots || []}
         />
-
-        <p className="mt-4 text-gray-400 text-xs text-center">
-          Chart updates automatically as PriceScan collects more data.
-        </p>
       </Modal>
     </main>
   );

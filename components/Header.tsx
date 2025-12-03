@@ -1,7 +1,7 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 
 import {
@@ -16,38 +16,46 @@ export default function Header() {
   const [user, setUser] = useState<any>(null);
   const [currency, setCurrency] = useState<CurrencyCode>("GBP");
 
-  // Load user + currency preference
+  // Load user + currency from DB
   useEffect(() => {
     const load = async () => {
-      const { data } = await supabase.auth.getUser();
-      const u = data?.user;
+      const { data: userData } = await supabase.auth.getUser();
+      const u = userData?.user || null;
       setUser(u);
 
       if (u) {
-        const { data: pref } = await supabase
+        const { data } = await supabase
           .from("user_profile")
           .select("currency")
           .eq("user_id", u.id)
           .maybeSingle();
 
-        if (pref?.currency && isSupportedCurrency(pref.currency)) {
-          setCurrency(pref.currency);
+        if (data?.currency && isSupportedCurrency(data.currency)) {
+          setCurrency(data.currency as CurrencyCode);
         }
       }
     };
 
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Save new currency + update UI instantly
   async function handleCurrencyChange(code: CurrencyCode) {
     setCurrency(code);
 
-    if (user) {
-      await supabase
-        .from("user_profile")
-        .upsert({ user_id: user.id, currency: code });
-    }
+    if (!user) return;
+
+    // Save to DB
+    await supabase
+      .from("user_profile")
+      .upsert({ user_id: user.id, currency: code });
+
+    // Broadcast to the rest of the app
+    window.dispatchEvent(
+      new CustomEvent("pricescan-currency-update", {
+        detail: code,
+      })
+    );
   }
 
   async function signOut() {
@@ -60,24 +68,27 @@ export default function Header() {
       <div className="max-w-6xl mx-auto flex justify-between items-center py-4 px-4">
 
         {/* Logo */}
-        <Link href="/" className="text-xl font-semibold flex items-center space-x-2">
+        <Link
+          href="/"
+          className="text-xl font-semibold flex items-center space-x-2"
+        >
           <span role="img">📈</span>
           <span>PriceScan</span>
         </Link>
 
-        {/* Right section */}
-        <nav className="flex items-center space-x-5 text-sm text-gray-700">
+        {/* Right side */}
+        <div className="flex items-center space-x-4">
 
-          {/* Currency Selector — SAME as homepage */}
-          <div>
+          {/* Currency Selector */}
+          <div className="flex items-center space-x-2">
+            <span className="text-gray-600 text-sm">Currency:</span>
+
             <select
-              className="border p-1 px-2 rounded-md shadow-sm bg-white"
+              className="border p-1 rounded-md text-sm"
               value={currency}
-              onChange={(e) =>
-                handleCurrencyChange(e.target.value as CurrencyCode)
-              }
+              onChange={(e) => handleCurrencyChange(e.target.value as CurrencyCode)}
             >
-              {[...SUPPORTED_CURRENCIES].sort().map((code) => (
+              {SUPPORTED_CURRENCIES.slice().sort().map((code) => (
                 <option key={code} value={code}>
                   {code}
                 </option>
@@ -85,19 +96,19 @@ export default function Header() {
             </select>
           </div>
 
-
+          {/* User */}
           {user && (
             <>
-              <span className="text-gray-600">{user.email}</span>
+              <span className="text-gray-600 text-sm">{user.email}</span>
               <button
                 onClick={signOut}
-                className="text-red-600 hover:underline"
+                className="text-red-600 text-sm hover:underline"
               >
                 Sign Out
               </button>
             </>
           )}
-        </nav>
+        </div>
       </div>
     </header>
   );
