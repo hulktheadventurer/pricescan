@@ -94,7 +94,7 @@ export default function HomePage() {
     setLoadingProducts(false);
   }
 
-  // Track product
+  // ✅ FIXED TRACK FUNCTION
   async function handleTrack(e: React.FormEvent) {
     e.preventDefault();
     if (!url.trim()) return toast.error("Please paste a product link first.");
@@ -104,9 +104,7 @@ export default function HomePage() {
     try {
       const merchant = detectMerchant(url);
       if (merchant !== "ebay") {
-        toast.warning(
-          "Supports eBay only. Amazon & AliExpress coming soon!"
-        );
+        toast.warning("Supports eBay only. Amazon & AliExpress coming soon!");
         setLoading(false);
         return;
       }
@@ -119,23 +117,40 @@ export default function HomePage() {
         return;
       }
 
+      // 1️⃣ ASK BACKEND TO FETCH LIVE ITEM DATA
       const res = await fetch("/api/track", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, user_id: user.id }),
+        body: JSON.stringify({ url }), // FIXED
       });
 
       const result = await res.json();
+      if (!res.ok) throw new Error(result.error || "API error");
 
-      if (!res.ok) {
-        if (result.error === "GROUP_LISTING") {
-          toast.warning(
-            "This listing has variations. Select a specific model/colour/storage and paste that URL instead."
-          );
-          return;
-        }
-        throw new Error(result.error || "API error");
-      }
+      const { id, title, price, currency } = result;
+
+      // 2️⃣ INSERT INTO DATABASE
+      const { data: inserted, error } = await supabase
+        .from("tracked_products")
+        .insert({
+          user_id: user.id,
+          url,
+          merchant: "ebay",
+          sku: id,
+          title: title ?? null,
+          locale: "uk",
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // 3️⃣ INITIAL PRICE SNAPSHOT
+      await supabase.from("price_snapshots").insert({
+        product_id: inserted.id,
+        price,
+        currency,
+      });
 
       toast.success("🎉 Product added!");
       setUrl("");
@@ -195,7 +210,7 @@ export default function HomePage() {
       </form>
 
       <p className="text-gray-500 text-sm mb-10">
-        Works with <b>eBay</b> today.  
+        Works with <b>eBay</b> today.
         <br />
         <span className="text-gray-400">Amazon & AliExpress coming soon.</span>
       </p>
@@ -205,8 +220,11 @@ export default function HomePage() {
         <p className="text-gray-400">Loading your tracked items…</p>
       ) : products.length === 0 ? (
         <p className="text-gray-500">
-          You’re not tracking any products yet. <br />
-          <span className="text-gray-400">Paste a link above to start tracking!</span>
+          You’re not tracking any products yet.
+          <br />
+          <span className="text-gray-400">
+            Paste a link above to start tracking!
+          </span>
         </p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 text-left">
@@ -231,14 +249,13 @@ export default function HomePage() {
                   h-[340px]
                 "
               >
-                {/* Title with fixed height */}
+                {/* Title */}
                 <div className="h-[52px] mb-2 overflow-hidden">
                   <p className="font-semibold text-[18px] text-gray-900 line-clamp-2 leading-tight">
                     {item.title?.trim() || "Loading…"}
                   </p>
                 </div>
 
-                {/* Merchant */}
                 <p className="text-sm text-gray-400 mb-1">{item.merchant}</p>
 
                 {/* Price */}
@@ -263,7 +280,7 @@ export default function HomePage() {
                   </p>
                 )}
 
-                {/* Price history button */}
+                {/* Chart */}
                 <button
                   onClick={() => {
                     setSelectedProduct(item);
@@ -274,7 +291,7 @@ export default function HomePage() {
                   📈 View Price History
                 </button>
 
-                {/* Bottom buttons */}
+                {/* Buttons */}
                 <div className="mt-auto flex gap-3">
                   <a
                     href={affiliateUrl}
@@ -314,11 +331,9 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Price History Modal */}
+      {/* Chart modal */}
       <Modal open={showChart} onClose={() => setShowChart(false)}>
-        <h2 className="text-xl font-semibold mb-3">
-          Price History
-        </h2>
+        <h2 className="text-xl font-semibold mb-3">Price History</h2>
 
         <PriceHistoryChart
           snapshots={selectedProduct?.price_snapshots || []}
