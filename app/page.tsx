@@ -10,7 +10,6 @@ import {
   CurrencyCode,
   convertCurrency,
   isSupportedCurrency,
-  SUPPORTED_CURRENCIES,
 } from "@/lib/currency";
 
 export default function HomePage() {
@@ -22,14 +21,24 @@ export default function HomePage() {
   const [products, setProducts] = useState<any[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
 
+  // Controlled by header via custom event
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
   const [showChart, setShowChart] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
 
-  // ----------------------------------------------------------------------
-  // Load currency + products on mount
-  // ----------------------------------------------------------------------
+  // Listen for header currency updates
+  useEffect(() => {
+    function handler(e: any) {
+      const code = e.detail as CurrencyCode;
+      setDisplayCurrency(code);
+    }
+
+    window.addEventListener("pricescan-currency-update", handler);
+    return () => window.removeEventListener("pricescan-currency-update", handler);
+  }, []);
+
+  // Load currency + products once on startup
   useEffect(() => {
     const load = async () => {
       const { data: userData } = await supabase.auth.getUser();
@@ -53,27 +62,7 @@ export default function HomePage() {
     load();
   }, []);
 
-  // ----------------------------------------------------------------------
-  // Update currency instantly + save to DB
-  // ----------------------------------------------------------------------
-  async function handleCurrencyChange(code: CurrencyCode) {
-    setDisplayCurrency(code);
-
-    const { data: userData } = await supabase.auth.getUser();
-    const user = userData?.user;
-    if (user) {
-      await supabase.from("user_profile").upsert({
-        user_id: user.id,
-        currency: code,
-      });
-    }
-
-    toast.success(`Currency updated to ${code}`);
-  }
-
-  // ----------------------------------------------------------------------
-  // Fetch user's tracked products
-  // ----------------------------------------------------------------------
+  // Load tracked products
   async function loadProducts() {
     setLoadingProducts(true);
 
@@ -130,9 +119,7 @@ export default function HomePage() {
     setLoadingProducts(false);
   }
 
-  // ----------------------------------------------------------------------
   // Track product
-  // ----------------------------------------------------------------------
   async function handleTrack(e: React.FormEvent) {
     e.preventDefault();
     if (!url.trim()) return toast.error("Please paste a product link.");
@@ -151,6 +138,7 @@ export default function HomePage() {
       });
 
       const result = await res.json();
+
       if (!res.ok) throw new Error(result.error);
 
       toast.success("Product added!");
@@ -163,9 +151,7 @@ export default function HomePage() {
     }
   }
 
-  // ----------------------------------------------------------------------
-  // Delete tracking
-  // ----------------------------------------------------------------------
+  // Delete tracked product
   async function handleDelete(id: string) {
     if (!confirm("Remove this item?")) return;
 
@@ -180,34 +166,14 @@ export default function HomePage() {
     }
   }
 
-  // ----------------------------------------------------------------------
-  // UI
-  // ----------------------------------------------------------------------
   return (
     <main className="max-w-6xl mx-auto px-4 py-10 text-center">
-
-      {/* Currency Selector (Header Only) */}
-      <div className="mb-6">
-        <select
-          className="border p-2 rounded-md shadow-sm"
-          value={displayCurrency}
-          onChange={(e) =>
-            handleCurrencyChange(e.target.value as CurrencyCode)
-          }
-        >
-          {[...SUPPORTED_CURRENCIES].sort().map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-      </div>
 
       <h1 className="text-3xl font-bold mb-4 text-blue-600">
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      {/* Track Form */}
+      {/* Track form */}
       <form
         onSubmit={handleTrack}
         className="flex flex-col md:flex-row gap-3 w-full max-w-xl mx-auto mb-8"
@@ -229,7 +195,7 @@ export default function HomePage() {
         </button>
       </form>
 
-      {/* Products */}
+      {/* Product Grid */}
       {loadingProducts ? (
         <p className="text-gray-400">Loading…</p>
       ) : products.length === 0 ? (
@@ -238,9 +204,10 @@ export default function HomePage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 text-left">
           {products.map((item) => {
             const affiliateUrl = getEbayAffiliateLink(item.url);
+
             const hasPrice = item.latest_price !== null;
 
-            // Convert price if needed
+            // Currency conversion
             let displayPrice = item.latest_price;
             let displayCode = item.currency;
 
@@ -257,12 +224,12 @@ export default function HomePage() {
               displayCode = displayCurrency;
             }
 
-            // Price drop detection
+            // Price drop block
             let priceDropBlock = null;
             if (item.price_snapshots.length > 1) {
               const latest = item.price_snapshots[0].price;
               const prevLow = Math.min(
-                ...item.price_snapshots.slice(1).map((s: any) => s.price)
+                ...item.price_snapshots.slice(1).map((s) => s.price)
               );
 
               if (latest < prevLow) {
@@ -307,7 +274,7 @@ export default function HomePage() {
                 {hasPrice ? (
                   <>
                     <p className="text-[26px] font-bold text-gray-900 mb-1">
-                      {displayCode} {displayPrice.toFixed(2)}
+                      {displayCode} {displayPrice!.toFixed(2)}
                     </p>
 
                     {priceDropBlock}
@@ -325,7 +292,7 @@ export default function HomePage() {
                   </p>
                 )}
 
-                {/* Last updated */}
+                {/* Timestamp */}
                 {item.seen_at && (
                   <p className="text-xs text-gray-400 italic mb-4">
                     Updated{" "}
@@ -370,7 +337,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Modal */}
+      {/* Price History Modal */}
       <Modal open={showChart} onClose={() => setShowChart(false)}>
         <h2 className="text-xl font-semibold mb-3">Price History</h2>
         <PriceHistoryChart
