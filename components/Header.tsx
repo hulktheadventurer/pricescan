@@ -6,13 +6,16 @@ import { useEffect, useState } from "react";
 
 export default function Header() {
   const supabase = createClientComponentClient();
-  const [user, setUser] = useState(null);
+
+  // user can be: null OR an object → so we use "any"
+  const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
     const loadUser = async () => {
       const { data } = await supabase.auth.getUser();
-      setUser(data.user);
+      setUser(data?.user ?? null); // safe
     };
+
     loadUser();
   }, []);
 
@@ -39,10 +42,7 @@ export default function Header() {
           {user && (
             <>
               <span className="text-gray-600">{user.email}</span>
-              <button
-                onClick={signOut}
-                className="text-red-600 hover:underline"
-              >
+              <button onClick={signOut} className="text-red-600 hover:underline">
                 Sign Out
               </button>
             </>
