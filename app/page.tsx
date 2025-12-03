@@ -22,13 +22,14 @@ export default function HomePage() {
   const [products, setProducts] = useState<any[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
 
-  const [displayCurrency, setDisplayCurrency] =
-    useState<CurrencyCode>("GBP");
+  const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
   const [showChart, setShowChart] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
 
-  // Load user currency + products at start
+  // ----------------------------------------------------------------------
+  // Load currency + products on mount
+  // ----------------------------------------------------------------------
   useEffect(() => {
     const load = async () => {
       const { data: userData } = await supabase.auth.getUser();
@@ -52,23 +53,27 @@ export default function HomePage() {
     load();
   }, []);
 
-  // Save new currency + instant refresh
+  // ----------------------------------------------------------------------
+  // Update currency instantly + save to DB
+  // ----------------------------------------------------------------------
   async function handleCurrencyChange(code: CurrencyCode) {
     setDisplayCurrency(code);
 
     const { data: userData } = await supabase.auth.getUser();
     const user = userData?.user;
-    if (!user) return;
-
-    await supabase.from("user_profile").upsert({
-      user_id: user.id,
-      currency: code,
-    });
+    if (user) {
+      await supabase.from("user_profile").upsert({
+        user_id: user.id,
+        currency: code,
+      });
+    }
 
     toast.success(`Currency updated to ${code}`);
   }
 
-  // Load tracked products
+  // ----------------------------------------------------------------------
+  // Fetch user's tracked products
+  // ----------------------------------------------------------------------
   async function loadProducts() {
     setLoadingProducts(true);
 
@@ -95,18 +100,14 @@ export default function HomePage() {
         `)
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
-        .order("seen_at", {
-          foreignTable: "price_snapshots",
-          ascending: false,
-        });
+        .order("seen_at", { foreignTable: "price_snapshots", ascending: false });
 
       if (error) throw error;
 
       const mapped = data.map((item: any) => {
         const snaps = [...item.price_snapshots].sort(
-          (a: any, b: any) =>
-            new Date(b.seen_at).getTime() -
-            new Date(a.seen_at).getTime()
+          (a, b) =>
+            new Date(b.seen_at).getTime() - new Date(a.seen_at).getTime()
         );
 
         const last = snaps[0] ?? null;
@@ -129,7 +130,9 @@ export default function HomePage() {
     setLoadingProducts(false);
   }
 
-  // Add new product
+  // ----------------------------------------------------------------------
+  // Track product
+  // ----------------------------------------------------------------------
   async function handleTrack(e: React.FormEvent) {
     e.preventDefault();
     if (!url.trim()) return toast.error("Please paste a product link.");
@@ -160,7 +163,9 @@ export default function HomePage() {
     }
   }
 
-  // Delete product
+  // ----------------------------------------------------------------------
+  // Delete tracking
+  // ----------------------------------------------------------------------
   async function handleDelete(id: string) {
     if (!confirm("Remove this item?")) return;
 
@@ -175,10 +180,13 @@ export default function HomePage() {
     }
   }
 
+  // ----------------------------------------------------------------------
+  // UI
+  // ----------------------------------------------------------------------
   return (
     <main className="max-w-6xl mx-auto px-4 py-10 text-center">
 
-      {/* Header Currency Selector */}
+      {/* Currency Selector (Header Only) */}
       <div className="mb-6">
         <select
           className="border p-2 rounded-md shadow-sm"
@@ -187,7 +195,7 @@ export default function HomePage() {
             handleCurrencyChange(e.target.value as CurrencyCode)
           }
         >
-          {SUPPORTED_CURRENCIES.sort().map((c) => (
+          {[...SUPPORTED_CURRENCIES].sort().map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
@@ -199,7 +207,7 @@ export default function HomePage() {
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      {/* TRACK FORM */}
+      {/* Track Form */}
       <form
         onSubmit={handleTrack}
         className="flex flex-col md:flex-row gap-3 w-full max-w-xl mx-auto mb-8"
@@ -221,20 +229,18 @@ export default function HomePage() {
         </button>
       </form>
 
-      {/* PRODUCT GRID */}
+      {/* Products */}
       {loadingProducts ? (
         <p className="text-gray-400">Loading…</p>
       ) : products.length === 0 ? (
-        <p className="text-gray-500">
-          No items yet — track something!
-        </p>
+        <p className="text-gray-500">No items yet — track something!</p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 text-left">
           {products.map((item) => {
             const affiliateUrl = getEbayAffiliateLink(item.url);
             const hasPrice = item.latest_price !== null;
 
-            // Convert currency
+            // Convert price if needed
             let displayPrice = item.latest_price;
             let displayCode = item.currency;
 
@@ -245,21 +251,18 @@ export default function HomePage() {
             ) {
               displayPrice = convertCurrency(
                 item.latest_price,
-                item.currency,
+                item.currency as CurrencyCode,
                 displayCurrency
               );
               displayCode = displayCurrency;
             }
 
-            // PRICE DROP INDICATOR
+            // Price drop detection
             let priceDropBlock = null;
-
             if (item.price_snapshots.length > 1) {
               const latest = item.price_snapshots[0].price;
               const prevLow = Math.min(
-                ...item.price_snapshots
-                  .slice(1)
-                  .map((s: any) => s.price)
+                ...item.price_snapshots.slice(1).map((s: any) => s.price)
               );
 
               if (latest < prevLow) {
@@ -280,14 +283,14 @@ export default function HomePage() {
                 key={item.id}
                 className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col"
               >
-                {/* TITLE */}
+                {/* Title */}
                 <div className="h-[52px] mb-2 overflow-hidden">
                   <p className="font-semibold text-[18px] line-clamp-2">
                     {item.title}
                   </p>
                 </div>
 
-                {/* STATUS BADGES */}
+                {/* Status badges */}
                 {item.status === "SOLD_OUT" && (
                   <span className="inline-block mb-2 px-2 py-1 text-xs font-semibold bg-red-100 text-red-700 rounded">
                     SOLD OUT
@@ -300,11 +303,11 @@ export default function HomePage() {
                   </span>
                 )}
 
-                {/* PRICE */}
+                {/* Price */}
                 {hasPrice ? (
                   <>
                     <p className="text-[26px] font-bold text-gray-900 mb-1">
-                      {displayCode} {displayPrice!.toFixed(2)}
+                      {displayCode} {displayPrice.toFixed(2)}
                     </p>
 
                     {priceDropBlock}
@@ -322,7 +325,7 @@ export default function HomePage() {
                   </p>
                 )}
 
-                {/* TIMESTAMP */}
+                {/* Last updated */}
                 {item.seen_at && (
                   <p className="text-xs text-gray-400 italic mb-4">
                     Updated{" "}
@@ -333,7 +336,7 @@ export default function HomePage() {
                   </p>
                 )}
 
-                {/* CHART */}
+                {/* Chart */}
                 <button
                   onClick={() => {
                     setSelectedProduct(item);
@@ -344,7 +347,7 @@ export default function HomePage() {
                   📈 View Price History
                 </button>
 
-                {/* BUTTONS */}
+                {/* Buttons */}
                 <div className="mt-auto flex gap-3">
                   <a
                     href={affiliateUrl}
@@ -367,7 +370,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* PRICE HISTORY MODAL */}
+      {/* Modal */}
       <Modal open={showChart} onClose={() => setShowChart(false)}>
         <h2 className="text-xl font-semibold mb-3">Price History</h2>
         <PriceHistoryChart
