@@ -1,5 +1,7 @@
 "use client";
 
+// TODO: refine homepage copy later
+
 import { useState, useEffect } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { toast } from "sonner";
@@ -162,7 +164,7 @@ export default function HomePage() {
     <main className="max-w-6xl mx-auto px-4 py-10 text-center">
 
       <h1 className="text-3xl font-bold mb-6 text-blue-600">
-        🔎 PriceScan — Track Product Prices
+        🔎 PriceScan — Track Product Prices Smarter
       </h1>
 
       {/* Track input */}
