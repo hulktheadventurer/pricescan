@@ -26,7 +26,12 @@ type ProductRow = {
   merchant: string | null;
   locale: string | null;
   sku: string | null;
-  status: "ACTIVE" | "SOLD_OUT" | "ENDED" | "UNKNOWN" | null;
+
+  // ✅ these are what /api/track actually writes
+  is_sold_out?: boolean | null;
+  is_ended?: boolean | null;
+  status_message?: string | null;
+
   price_snapshots: Snapshot[];
   latest_price: number | null;
   currency: string;
@@ -45,7 +50,9 @@ export default function HomePage() {
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
   const [showChart, setShowChart] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(
+    null
+  );
 
   const [trackStatus, setTrackStatus] = useState<string>("");
 
@@ -54,6 +61,7 @@ export default function HomePage() {
     []
   );
 
+  // Load saved user currency (if you have this table) + load products once
   useEffect(() => {
     const load = async () => {
       const { data: userData } = await supabase.auth.getUser();
@@ -78,6 +86,7 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Listen to header currency updates
   useEffect(() => {
     const handler = (e: Event) => {
       const ce = e as CustomEvent<string>;
@@ -87,9 +96,15 @@ export default function HomePage() {
       }
     };
 
-    window.addEventListener("pricescan-currency-update", handler as EventListener);
+    window.addEventListener(
+      "pricescan-currency-update",
+      handler as EventListener
+    );
     return () => {
-      window.removeEventListener("pricescan-currency-update", handler as EventListener);
+      window.removeEventListener(
+        "pricescan-currency-update",
+        handler as EventListener
+      );
     };
   }, []);
 
@@ -102,11 +117,12 @@ export default function HomePage() {
 
       if (!user) {
         setProducts([]);
-        setLoadingProducts(false);
         return;
       }
 
-      // ✅ IMPORTANT FIX: remove !inner so products with 0 snapshots still show
+      // ✅ CRITICAL FIX:
+      // - NO "!inner" join, so products with zero snapshots still show (sold out/ended).
+      // - Select the status fields your API writes.
       const { data, error } = await supabase
         .from("tracked_products")
         .select(
@@ -117,7 +133,9 @@ export default function HomePage() {
             merchant,
             locale,
             sku,
-            status,
+            is_sold_out,
+            is_ended,
+            status_message,
             price_snapshots (
               price,
               currency,
@@ -127,18 +145,20 @@ export default function HomePage() {
         )
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
-        .order("seen_at", { foreignTable: "price_snapshots", ascending: false });
+        .order("seen_at", {
+          foreignTable: "price_snapshots",
+          ascending: false,
+        });
 
       if (error) throw error;
 
       const mapped: ProductRow[] = (data || []).map((item: any) => {
         const snaps: Snapshot[] = Array.isArray(item.price_snapshots)
-          ? [...item.price_snapshots]
+          ? [...item.price_snapshots].sort(
+              (a, b) =>
+                new Date(b.seen_at).getTime() - new Date(a.seen_at).getTime()
+            )
           : [];
-
-        snaps.sort(
-          (a, b) => new Date(b.seen_at).getTime() - new Date(a.seen_at).getTime()
-        );
 
         const last = snaps[0] ?? null;
 
@@ -149,7 +169,11 @@ export default function HomePage() {
           merchant: item.merchant ?? null,
           locale: item.locale ?? null,
           sku: item.sku ?? null,
-          status: item.status ?? null,
+
+          is_sold_out: item.is_sold_out ?? null,
+          is_ended: item.is_ended ?? null,
+          status_message: item.status_message ?? null,
+
           price_snapshots: snaps,
           latest_price: last?.price ?? null,
           currency: last?.currency ?? "GBP",
@@ -195,7 +219,6 @@ export default function HomePage() {
       });
 
       const result = await res.json().catch(() => ({}));
-
       if (!res.ok) throw new Error(result?.error || `Track failed (${res.status})`);
 
       toast.success("✅ Product added!");
@@ -220,7 +243,10 @@ export default function HomePage() {
   async function handleDelete(id: string) {
     if (!confirm("Remove this item?")) return;
 
-    const { error } = await supabase.from("tracked_products").delete().eq("id", id);
+    const { error } = await supabase
+      .from("tracked_products")
+      .delete()
+      .eq("id", id);
 
     if (error) {
       toast.error("Delete failed.");
@@ -294,7 +320,7 @@ export default function HomePage() {
             }
 
             let priceDropBlock: JSX.Element | null = null;
-            if (item.price_snapshots.length > 1) {
+            if (Array.isArray(item.price_snapshots) && item.price_snapshots.length > 1) {
               const latest = item.price_snapshots[0].price;
               const prevLow = Math.min(
                 ...item.price_snapshots.slice(1).map((s: Snapshot) => s.price)
@@ -312,6 +338,9 @@ export default function HomePage() {
               }
             }
 
+            const isSoldOut = !!item.is_sold_out;
+            const isEnded = !!item.is_ended;
+
             return (
               <div
                 key={item.id}
@@ -323,15 +352,21 @@ export default function HomePage() {
                   </p>
                 </div>
 
-                {item.status === "SOLD_OUT" && (
+                {/* ✅ FIXED Status badges */}
+                {isSoldOut && (
                   <span className="inline-block mb-2 px-2 py-1 text-xs font-semibold bg-red-100 text-red-700 rounded">
                     SOLD OUT
                   </span>
                 )}
-                {item.status === "ENDED" && (
+
+                {isEnded && (
                   <span className="inline-block mb-2 px-2 py-1 text-xs font-semibold bg-gray-200 text-gray-600 rounded">
                     LISTING ENDED
                   </span>
+                )}
+
+                {item.status_message && (
+                  <p className="text-xs text-gray-500 mb-2">{item.status_message}</p>
                 )}
 
                 {hasPrice ? (
@@ -350,7 +385,9 @@ export default function HomePage() {
                     )}
                   </>
                 ) : (
-                  <p className="text-sm text-blue-500 animate-pulse">No price yet (sold out/ended or pending)</p>
+                  <p className="text-sm text-blue-500 animate-pulse">
+                    No price yet (sold out/ended or pending)
+                  </p>
                 )}
 
                 {item.seen_at && (
@@ -377,6 +414,7 @@ export default function HomePage() {
                   <a
                     href={affiliateUrl}
                     target="_blank"
+                    rel="noreferrer"
                     className="flex-1 text-center bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700"
                   >
                     View
