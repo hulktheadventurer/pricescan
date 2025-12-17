@@ -1,13 +1,17 @@
 import "./globals.css";
 import Header from "@/components/Header";
-import Footer from "@/components/Footer";
+import { Toaster } from "sonner";
 
 export const metadata = {
   title: "PriceScan — Track Prices Instantly",
   description: "Track product prices across eBay and more.",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html lang="en">
       <head>
@@ -17,11 +21,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen flex flex-col font-sans bg-gray-50 text-gray-900">
         <Header />
 
-        <main className="flex-1">
-          {children}
-        </main>
+        <main className="flex-1">{children}</main>
 
-        <Footer />
+        {/* Global toast notifications */}
+        <Toaster richColors position="top-center" />
       </body>
     </html>
   );
