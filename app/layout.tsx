@@ -1,5 +1,6 @@
 import "./globals.css";
 import Header from "@/components/Header";
+import Footer from "@/components/Footer";
 import { Toaster } from "sonner";
 
 export const metadata = {
@@ -13,7 +14,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <meta name="verify-admitad" content="0e8bbbb3bf" />
       </head>
@@ -22,6 +23,8 @@ export default function RootLayout({
         <Header />
 
         <main className="flex-1">{children}</main>
+
+        <Footer />
 
         {/* Global toast notifications */}
         <Toaster richColors position="top-center" />
