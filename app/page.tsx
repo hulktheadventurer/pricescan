@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { toast } from "sonner";
 import { getEbayAffiliateLink } from "@/lib/affiliates/ebay";
@@ -27,11 +27,12 @@ type ProductRow = {
   locale: string | null;
   sku: string | null;
 
-  // ✅ these are what /api/track actually writes
+  // ✅ what /api/track writes
   is_sold_out?: boolean | null;
   is_ended?: boolean | null;
   status_message?: string | null;
 
+  // snapshots
   price_snapshots: Snapshot[];
   latest_price: number | null;
   currency: string;
@@ -61,7 +62,7 @@ export default function HomePage() {
     []
   );
 
-  // Load saved user currency (if you have this table) + load products once
+  // Load saved currency (if present) + load products
   useEffect(() => {
     const load = async () => {
       const { data: userData } = await supabase.auth.getUser();
@@ -121,8 +122,8 @@ export default function HomePage() {
       }
 
       // ✅ CRITICAL FIX:
-      // - NO "!inner" join, so products with zero snapshots still show (sold out/ended).
-      // - Select the status fields your API writes.
+      // - NO "!inner" join, so products with zero snapshots still show.
+      // - Select the fields your API writes: is_sold_out, is_ended, status_message.
       const { data, error } = await supabase
         .from("tracked_products")
         .select(
@@ -145,10 +146,7 @@ export default function HomePage() {
         )
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
-        .order("seen_at", {
-          foreignTable: "price_snapshots",
-          ascending: false,
-        });
+        .order("seen_at", { foreignTable: "price_snapshots", ascending: false });
 
       if (error) throw error;
 
@@ -218,8 +216,9 @@ export default function HomePage() {
         body: JSON.stringify({ url: link, user_id: user.id }),
       });
 
-      const result = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(result?.error || `Track failed (${res.status})`);
+      const result = await res.json().catch(() => ({} as any));
+      if (!res.ok)
+        throw new Error(result?.error || `Track failed (${res.status})`);
 
       toast.success("✅ Product added!");
       setTrackStatus("✅ Product added!");
@@ -263,6 +262,7 @@ export default function HomePage() {
         🔎 PriceScan — Track Product Prices
       </h1>
 
+      {/* (sortedCurrencies kept in case you use it elsewhere) */}
       <form
         noValidate
         onSubmit={handleSubmit}
@@ -308,7 +308,6 @@ export default function HomePage() {
             if (
               hasPrice &&
               isSupportedCurrency(item.currency) &&
-              isSupportedCurrency(displayCurrency) &&
               item.currency !== displayCurrency
             ) {
               displayPrice = convertCurrency(
@@ -319,8 +318,13 @@ export default function HomePage() {
               displayCode = displayCurrency;
             }
 
-            let priceDropBlock: JSX.Element | null = null;
-            if (Array.isArray(item.price_snapshots) && item.price_snapshots.length > 1) {
+            // ✅ FIX: avoid JSX namespace typing (Vercel build error)
+            let priceDropBlock: React.ReactNode = null;
+
+            if (
+              Array.isArray(item.price_snapshots) &&
+              item.price_snapshots.length > 1
+            ) {
               const latest = item.price_snapshots[0].price;
               const prevLow = Math.min(
                 ...item.price_snapshots.slice(1).map((s: Snapshot) => s.price)
@@ -332,7 +336,8 @@ export default function HomePage() {
 
                 priceDropBlock = (
                   <p className="text-sm text-green-600 font-semibold mb-2">
-                    📉 Price drop: -{item.currency} {diff.toFixed(2)} (-{pct.toFixed(1)}%)
+                    📉 Price drop: -{item.currency} {diff.toFixed(2)} (-
+                    {pct.toFixed(1)}%)
                   </p>
                 );
               }
@@ -366,7 +371,9 @@ export default function HomePage() {
                 )}
 
                 {item.status_message && (
-                  <p className="text-xs text-gray-500 mb-2">{item.status_message}</p>
+                  <p className="text-xs text-gray-500 mb-2">
+                    {item.status_message}
+                  </p>
                 )}
 
                 {hasPrice ? (
