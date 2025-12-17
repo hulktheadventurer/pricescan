@@ -27,7 +27,6 @@ type ProductRow = {
   locale: string | null;
   sku: string | null;
 
-  // what /api/track writes
   is_sold_out?: boolean | null;
   is_ended?: boolean | null;
   status_message?: string | null;
@@ -54,21 +53,17 @@ export default function HomePage() {
 
   const [trackStatus, setTrackStatus] = useState<string>("");
 
-  // ✅ Auth modal state
   const [authOpen, setAuthOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
-  // If user clicked Track while signed out, remember the URL and retry after login
   const [pendingTrackUrl, setPendingTrackUrl] = useState<string | null>(null);
 
-  // kept (in case you use it elsewhere)
-  const sortedCurrencies = useMemo(
+  useMemo(
     () => [...SUPPORTED_CURRENCIES].sort((a, b) => a.localeCompare(b)),
     []
   );
 
-  // Load saved currency (if present) + load products
   useEffect(() => {
     const load = async () => {
       const { data: userData } = await supabase.auth.getUser();
@@ -93,7 +88,6 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Listen to header currency updates
   useEffect(() => {
     const handler = (e: Event) => {
       const ce = e as CustomEvent<string>;
@@ -112,7 +106,6 @@ export default function HomePage() {
     };
   }, []);
 
-  // ✅ When auth state becomes SIGNED_IN, reload products and optionally auto-track pending URL
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange(async (event) => {
       if (event === "SIGNED_IN") {
@@ -145,9 +138,6 @@ export default function HomePage() {
         return;
       }
 
-      // ✅ CRITICAL FIXES:
-      // - NO "!inner" join, so products with zero snapshots still show (sold out/ended).
-      // - Select the correct status fields written by /api/track.
       const { data, error } = await supabase
         .from("tracked_products")
         .select(
@@ -220,11 +210,15 @@ export default function HomePage() {
     }
 
     setAuthLoading(true);
+
     try {
-      const emailRedirectTo =
-        typeof window !== "undefined"
-          ? `${window.location.origin}/auth/callback`
-          : undefined;
+      // ✅ FORCE correct domain for cookies + session
+      // Set NEXT_PUBLIC_SITE_URL=https://pricescan.ai in Vercel env
+      const base =
+        process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ||
+        window.location.origin;
+
+      const emailRedirectTo = `${base}/auth/callback`;
 
       const { error } = await supabase.auth.signInWithOtp({
         email: e,
@@ -260,7 +254,6 @@ export default function HomePage() {
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
 
-      // ✅ Option C: show email prompt if not signed in
       if (!user) {
         setLoading(false);
         setTrackStatus("❌ Not signed in.");
@@ -301,11 +294,7 @@ export default function HomePage() {
     if (!confirm("Remove this item?")) return;
 
     const { error } = await supabase.from("tracked_products").delete().eq("id", id);
-
-    if (error) {
-      toast.error("Delete failed.");
-      return;
-    }
+    if (error) return toast.error("Delete failed.");
 
     toast.success("Removed.");
     setProducts((prev) => prev.filter((p) => p.id !== id));
@@ -374,23 +363,15 @@ export default function HomePage() {
 
             let priceDropBlock: React.ReactNode = null;
 
-            if (
-              Array.isArray(item.price_snapshots) &&
-              item.price_snapshots.length > 1
-            ) {
+            if (Array.isArray(item.price_snapshots) && item.price_snapshots.length > 1) {
               const latest = item.price_snapshots[0].price;
-              const prevLow = Math.min(
-                ...item.price_snapshots.slice(1).map((s) => s.price)
-              );
-
+              const prevLow = Math.min(...item.price_snapshots.slice(1).map((s) => s.price));
               if (latest < prevLow) {
                 const diff = prevLow - latest;
                 const pct = (diff / prevLow) * 100;
-
                 priceDropBlock = (
                   <p className="text-sm text-green-600 font-semibold mb-2">
-                    📉 Price drop: -{item.currency} {diff.toFixed(2)} (-
-                    {pct.toFixed(1)}%)
+                    📉 Price drop: -{item.currency} {diff.toFixed(2)} (-{pct.toFixed(1)}%)
                   </p>
                 );
               }
@@ -432,12 +413,6 @@ export default function HomePage() {
                       {displayCode} {displayPrice.toFixed(2)}
                     </p>
                     {priceDropBlock}
-                    {displayCode !== item.currency && (
-                      <p className="text-xs text-gray-400 mb-1">
-                        Price in original currency: {item.currency}{" "}
-                        {(item.latest_price as number).toFixed(2)}
-                      </p>
-                    )}
                   </>
                 ) : (
                   <p className="text-sm text-blue-500 animate-pulse">
@@ -493,7 +468,6 @@ export default function HomePage() {
         <PriceHistoryChart snapshots={selectedProduct?.price_snapshots || []} />
       </Modal>
 
-      {/* ✅ Email sign-in modal (shows when Track is clicked while signed out) */}
       <Modal open={authOpen} onClose={() => setAuthOpen(false)}>
         <h2 className="text-xl font-semibold mb-3">Sign in to track</h2>
         <p className="text-sm text-gray-600 mb-4">
