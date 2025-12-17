@@ -27,12 +27,11 @@ type ProductRow = {
   locale: string | null;
   sku: string | null;
 
-  // ✅ what /api/track writes
+  // what /api/track writes
   is_sold_out?: boolean | null;
   is_ended?: boolean | null;
   status_message?: string | null;
 
-  // snapshots
   price_snapshots: Snapshot[];
   latest_price: number | null;
   currency: string;
@@ -51,12 +50,19 @@ export default function HomePage() {
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
   const [showChart, setShowChart] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(
-    null
-  );
+  const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
 
   const [trackStatus, setTrackStatus] = useState<string>("");
 
+  // ✅ Auth modal state
+  const [authOpen, setAuthOpen] = useState(false);
+  const [email, setEmail] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // If user clicked Track while signed out, remember the URL and retry after login
+  const [pendingTrackUrl, setPendingTrackUrl] = useState<string | null>(null);
+
+  // kept (in case you use it elsewhere)
   const sortedCurrencies = useMemo(
     () => [...SUPPORTED_CURRENCIES].sort((a, b) => a.localeCompare(b)),
     []
@@ -97,10 +103,7 @@ export default function HomePage() {
       }
     };
 
-    window.addEventListener(
-      "pricescan-currency-update",
-      handler as EventListener
-    );
+    window.addEventListener("pricescan-currency-update", handler as EventListener);
     return () => {
       window.removeEventListener(
         "pricescan-currency-update",
@@ -108,6 +111,27 @@ export default function HomePage() {
       );
     };
   }, []);
+
+  // ✅ When auth state becomes SIGNED_IN, reload products and optionally auto-track pending URL
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event) => {
+      if (event === "SIGNED_IN") {
+        await loadProducts();
+
+        if (pendingTrackUrl) {
+          const toTrack = pendingTrackUrl;
+          setPendingTrackUrl(null);
+          setUrl(toTrack);
+          setTimeout(() => trackNow(toTrack), 150);
+        }
+      }
+    });
+
+    return () => {
+      sub?.subscription?.unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingTrackUrl]);
 
   async function loadProducts() {
     setLoadingProducts(true);
@@ -121,9 +145,9 @@ export default function HomePage() {
         return;
       }
 
-      // ✅ CRITICAL FIX:
-      // - NO "!inner" join, so products with zero snapshots still show.
-      // - Select the fields your API writes: is_sold_out, is_ended, status_message.
+      // ✅ CRITICAL FIXES:
+      // - NO "!inner" join, so products with zero snapshots still show (sold out/ended).
+      // - Select the correct status fields written by /api/track.
       const { data, error } = await supabase
         .from("tracked_products")
         .select(
@@ -188,8 +212,40 @@ export default function HomePage() {
     }
   }
 
-  async function trackNow() {
-    const link = url.trim();
+  async function sendMagicLink() {
+    const e = email.trim();
+    if (!e) {
+      toast.error("Enter your email.");
+      return;
+    }
+
+    setAuthLoading(true);
+    try {
+      const emailRedirectTo =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/auth/callback`
+          : undefined;
+
+      const { error } = await supabase.auth.signInWithOtp({
+        email: e,
+        options: { emailRedirectTo },
+      });
+
+      if (error) throw error;
+
+      toast.success("Magic link sent. Check your email.");
+      setTrackStatus("📩 Magic link sent — open it to sign in.");
+      setAuthOpen(false);
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err?.message || "Failed to send magic link.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function trackNow(forcedUrl?: string) {
+    const link = (forcedUrl ?? url).trim();
 
     if (!link) {
       toast.error("Please paste a product link.");
@@ -204,9 +260,12 @@ export default function HomePage() {
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
 
+      // ✅ Option C: show email prompt if not signed in
       if (!user) {
-        toast.error("Please sign in first.");
+        setLoading(false);
         setTrackStatus("❌ Not signed in.");
+        setPendingTrackUrl(link);
+        setAuthOpen(true);
         return;
       }
 
@@ -217,8 +276,7 @@ export default function HomePage() {
       });
 
       const result = await res.json().catch(() => ({} as any));
-      if (!res.ok)
-        throw new Error(result?.error || `Track failed (${res.status})`);
+      if (!res.ok) throw new Error(result?.error || `Track failed (${res.status})`);
 
       toast.success("✅ Product added!");
       setTrackStatus("✅ Product added!");
@@ -242,10 +300,7 @@ export default function HomePage() {
   async function handleDelete(id: string) {
     if (!confirm("Remove this item?")) return;
 
-    const { error } = await supabase
-      .from("tracked_products")
-      .delete()
-      .eq("id", id);
+    const { error } = await supabase.from("tracked_products").delete().eq("id", id);
 
     if (error) {
       toast.error("Delete failed.");
@@ -262,7 +317,6 @@ export default function HomePage() {
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      {/* (sortedCurrencies kept in case you use it elsewhere) */}
       <form
         noValidate
         onSubmit={handleSubmit}
@@ -318,7 +372,6 @@ export default function HomePage() {
               displayCode = displayCurrency;
             }
 
-            // ✅ FIX: avoid JSX namespace typing (Vercel build error)
             let priceDropBlock: React.ReactNode = null;
 
             if (
@@ -327,7 +380,7 @@ export default function HomePage() {
             ) {
               const latest = item.price_snapshots[0].price;
               const prevLow = Math.min(
-                ...item.price_snapshots.slice(1).map((s: Snapshot) => s.price)
+                ...item.price_snapshots.slice(1).map((s) => s.price)
               );
 
               if (latest < prevLow) {
@@ -357,7 +410,6 @@ export default function HomePage() {
                   </p>
                 </div>
 
-                {/* ✅ FIXED Status badges */}
                 {isSoldOut && (
                   <span className="inline-block mb-2 px-2 py-1 text-xs font-semibold bg-red-100 text-red-700 rounded">
                     SOLD OUT
@@ -371,9 +423,7 @@ export default function HomePage() {
                 )}
 
                 {item.status_message && (
-                  <p className="text-xs text-gray-500 mb-2">
-                    {item.status_message}
-                  </p>
+                  <p className="text-xs text-gray-500 mb-2">{item.status_message}</p>
                 )}
 
                 {hasPrice ? (
@@ -381,9 +431,7 @@ export default function HomePage() {
                     <p className="text-[26px] font-bold text-gray-900 mb-1">
                       {displayCode} {displayPrice.toFixed(2)}
                     </p>
-
                     {priceDropBlock}
-
                     {displayCode !== item.currency && (
                       <p className="text-xs text-gray-400 mb-1">
                         Price in original currency: {item.currency}{" "}
@@ -443,6 +491,39 @@ export default function HomePage() {
       <Modal open={showChart} onClose={() => setShowChart(false)}>
         <h2 className="text-xl font-semibold mb-3">Price History</h2>
         <PriceHistoryChart snapshots={selectedProduct?.price_snapshots || []} />
+      </Modal>
+
+      {/* ✅ Email sign-in modal (shows when Track is clicked while signed out) */}
+      <Modal open={authOpen} onClose={() => setAuthOpen(false)}>
+        <h2 className="text-xl font-semibold mb-3">Sign in to track</h2>
+        <p className="text-sm text-gray-600 mb-4">
+          Enter your email and we’ll send you a magic sign-in link.
+        </p>
+
+        <div className="flex flex-col gap-3">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@email.com"
+            className="p-3 border rounded-md shadow-sm"
+          />
+
+          <button
+            onClick={sendMagicLink}
+            disabled={authLoading}
+            className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-60"
+          >
+            {authLoading ? "Sending..." : "Send magic link"}
+          </button>
+
+          <button
+            onClick={() => setAuthOpen(false)}
+            className="px-6 py-3 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300"
+          >
+            Cancel
+          </button>
+        </div>
       </Modal>
     </main>
   );
