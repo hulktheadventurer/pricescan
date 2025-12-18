@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { toast } from "sonner";
 import Modal from "@/components/Modal";
@@ -36,65 +36,97 @@ type ProductRow = {
   seen_at: string | null;
 };
 
+function timeout<T>(ms: number, label: string) {
+  return new Promise<T>((_, reject) =>
+    setTimeout(() => reject(new Error(`Timeout: ${label} (${ms}ms)`)), ms)
+  );
+}
+
+// Supabase PostgrestBuilder is a "thenable" — turn it into a real Promise
+function exec<T>(builder: any): Promise<T> {
+  return builder.then((r: T) => r);
+}
+
 export default function HomePage() {
   const supabase = createClientComponentClient();
 
-  // ✅ stable auth: session once + cache user
+  // Auth (stable)
   const [authChecked, setAuthChecked] = useState(false);
   const [user, setUser] = useState<any>(null);
 
-  // UI state
+  // UI
   const [url, setUrl] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [trackStatus, setTrackStatus] = useState("");
-
-  const [products, setProducts] = useState<ProductRow[]>([]);
+  const [tracking, setTracking] = useState(false);
   const [loadingProducts, setLoadingProducts] = useState(true);
+  const [products, setProducts] = useState<ProductRow[]>([]);
+  const [statusLine, setStatusLine] = useState("");
 
+  // Currency
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
+  // Modal (chart)
   const [showChart, setShowChart] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
 
+  // Auth modal
   const [authOpen, setAuthOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [authLoading, setAuthLoading] = useState(false);
+  const [authSending, setAuthSending] = useState(false);
 
-  // Currency selector updates (keeps your existing pattern)
+  const signedInText = useMemo(() => {
+    if (!authChecked) return "Checking sign-in…";
+    if (!user) return "Not signed in.";
+    return `Signed in as: ${user.email}`;
+  }, [authChecked, user]);
+
+  // Keep your existing “currency selector emits event” pattern
   useEffect(() => {
     const handler = (e: Event) => {
       const ce = e as CustomEvent<string>;
       const next = ce.detail;
-      if (next && isSupportedCurrency(next)) {
-        setDisplayCurrency(next as CurrencyCode);
-      }
+      if (next && isSupportedCurrency(next)) setDisplayCurrency(next as CurrencyCode);
     };
     window.addEventListener("pricescan-currency-update", handler as EventListener);
     return () =>
       window.removeEventListener("pricescan-currency-update", handler as EventListener);
   }, []);
 
-  // ✅ auth init once + listen changes
+  // Init auth once + react to changes
   useEffect(() => {
     const init = async () => {
-      const { data } = await supabase.auth.getSession();
-      setUser(data.session?.user ?? null);
-      setAuthChecked(true);
-      await loadProducts(data.session?.user ?? null);
+      try {
+        const { data } = await Promise.race([
+          supabase.auth.getSession(),
+          timeout<any>(15000, "supabase.auth.getSession"),
+        ]);
+        setUser(data?.session?.user ?? null);
+      } catch {
+        setUser(null);
+      } finally {
+        setAuthChecked(true);
+      }
+
+      await loadProducts(dataUserSafe());
     };
+
+    const sub = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const next = session?.user ?? null;
+      setUser(next);
+      setAuthChecked(true);
+      await loadProducts(next);
+    });
 
     init();
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const nextUser = session?.user ?? null;
-      setUser(nextUser);
-      setAuthChecked(true);
-      await loadProducts(nextUser);
-    });
-
-    return () => sub.subscription.unsubscribe();
+    return () => {
+      sub.data.subscription.unsubscribe();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function dataUserSafe() {
+    return user ?? null;
+  }
 
   async function loadProducts(currentUser: any) {
     setLoadingProducts(true);
@@ -105,7 +137,7 @@ export default function HomePage() {
         return;
       }
 
-      const { data, error } = await supabase
+      const builder = supabase
         .from("tracked_products")
         .select(
           `
@@ -129,9 +161,14 @@ export default function HomePage() {
         .order("created_at", { ascending: false })
         .order("seen_at", { foreignTable: "price_snapshots", ascending: false });
 
-      if (error) throw error;
+      const res: any = await Promise.race([
+        exec<any>(builder),
+        timeout<any>(20000, "supabase select tracked_products"),
+      ]);
 
-      const mapped: ProductRow[] = (data || []).map((item: any) => {
+      if (res?.error) throw res.error;
+
+      const mapped: ProductRow[] = (res?.data || []).map((item: any) => {
         const snaps: Snapshot[] = Array.isArray(item.price_snapshots)
           ? [...item.price_snapshots].sort(
               (a, b) => new Date(b.seen_at).getTime() - new Date(a.seen_at).getTime()
@@ -161,9 +198,10 @@ export default function HomePage() {
 
       setProducts(mapped);
     } catch (e: any) {
-      console.error("❌ loadProducts error:", e);
-      toast.error(e?.message || "Failed to load items");
+      console.error("❌ loadProducts failed:", e);
+      // IMPORTANT: don't leave UI stuck loading
       setProducts([]);
+      toast.error(e?.message || "Failed to load items.");
     } finally {
       setLoadingProducts(false);
     }
@@ -173,7 +211,7 @@ export default function HomePage() {
     const e = email.trim();
     if (!e) return toast.error("Enter your email.");
 
-    setAuthLoading(true);
+    setAuthSending(true);
     try {
       const base =
         process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") || window.location.origin;
@@ -187,13 +225,13 @@ export default function HomePage() {
       if (error) throw error;
 
       toast.success("Magic link sent. Check your email.");
-      setTrackStatus("📩 Magic link sent — open it to sign in.");
+      setStatusLine("📩 Magic link sent — open it to sign in.");
       setAuthOpen(false);
     } catch (err: any) {
       console.error(err);
       toast.error(err?.message || "Failed to send magic link.");
     } finally {
-      setAuthLoading(false);
+      setAuthSending(false);
     }
   }
 
@@ -201,60 +239,73 @@ export default function HomePage() {
     const link = url.trim();
     if (!link) {
       toast.error("Please paste a product link.");
-      setTrackStatus("❌ Please paste a product link.");
+      setStatusLine("❌ Please paste a product link.");
       return;
     }
 
     if (!user) {
-      setTrackStatus("❌ Not signed in.");
       setAuthOpen(true);
+      setStatusLine("❌ Not signed in.");
       return;
     }
 
-    setLoading(true);
-    setTrackStatus("⏳ Sending…");
+    setTracking(true);
+    setStatusLine("⏳ Sending…");
+
+    const controller = new AbortController();
+    const kill = setTimeout(() => controller.abort(), 20000);
 
     try {
       const res = await fetch("/api/track", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: link, user_id: user.id }),
+        signal: controller.signal,
       });
 
       const json = await res.json().catch(() => ({} as any));
-
-      if (!res.ok) {
-        throw new Error(json?.error || `Track failed (${res.status})`);
-      }
+      if (!res.ok) throw new Error(json?.error || `Track failed (${res.status})`);
 
       toast.success("✅ Product added!");
-      setTrackStatus("✅ Product added!");
+      setStatusLine("✅ Product added!");
       setUrl("");
+
+      // Reload list (also timeout-safe)
       await loadProducts(user);
     } catch (e: any) {
-      console.error("❌ track error:", e);
-      toast.error(e?.message || "Track failed.");
-      setTrackStatus(`❌ ${e?.message || "Track failed."}`);
+      console.error("❌ trackNow failed:", e);
+
+      if (e?.name === "AbortError") {
+        toast.error("Track timed out (API didn’t respond).");
+        setStatusLine("❌ Timed out — API didn’t respond.");
+      } else {
+        toast.error(e?.message || "Track failed.");
+        setStatusLine(`❌ ${e?.message || "Track failed."}`);
+      }
     } finally {
-      setLoading(false);
+      clearTimeout(kill);
+      setTracking(false);
     }
   }
 
   async function handleDelete(id: string) {
     if (!confirm("Remove this item?")) return;
 
-    const { error } = await supabase.from("tracked_products").delete().eq("id", id);
-    if (error) return toast.error("Delete failed.");
+    try {
+      const builder = supabase.from("tracked_products").delete().eq("id", id);
+      const res: any = await Promise.race([
+        exec<any>(builder),
+        timeout<any>(15000, "supabase delete tracked_products"),
+      ]);
+      if (res?.error) throw res.error;
 
-    toast.success("Removed.");
-    setProducts((prev) => prev.filter((p) => p.id !== id));
+      toast.success("Removed.");
+      setProducts((prev) => prev.filter((p) => p.id !== id));
+    } catch (e: any) {
+      console.error("❌ delete failed:", e);
+      toast.error(e?.message || "Delete failed.");
+    }
   }
-
-  const authLine = !authChecked
-    ? "Checking sign-in…"
-    : user
-    ? `Signed in as: ${user.email}`
-    : "Not signed in.";
 
   return (
     <main className="max-w-6xl mx-auto px-4 py-10 text-center">
@@ -262,7 +313,7 @@ export default function HomePage() {
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      <p className="text-xs text-gray-500 mb-6">{authLine}</p>
+      <p className="text-xs text-gray-500 mb-6">{signedInText}</p>
 
       <div className="flex flex-col md:flex-row gap-3 w-full max-w-xl mx-auto mb-3">
         <input
@@ -277,18 +328,14 @@ export default function HomePage() {
         <button
           type="button"
           onClick={trackNow}
-          disabled={loading}
+          disabled={tracking}
           className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-60"
         >
-          {loading ? "Tracking..." : "Track"}
+          {tracking ? "Tracking..." : "Track"}
         </button>
       </div>
 
-      {trackStatus ? (
-        <p className="text-sm text-gray-500 mb-5">{trackStatus}</p>
-      ) : (
-        <div className="mb-5" />
-      )}
+      {statusLine ? <p className="text-sm text-gray-500 mb-5">{statusLine}</p> : <div className="mb-5" />}
 
       {loadingProducts ? (
         <p className="text-gray-400">Loading…</p>
@@ -319,6 +366,21 @@ export default function HomePage() {
             const isSoldOut = !!item.is_sold_out;
             const isEnded = !!item.is_ended;
 
+            // Price drop block (kept, but safe)
+            let priceDropBlock: React.ReactNode = null;
+            if (Array.isArray(item.price_snapshots) && item.price_snapshots.length > 1) {
+              const latest = item.price_snapshots[0]?.price;
+              const prevLow = Math.min(...item.price_snapshots.slice(1).map((s) => s.price));
+              if (typeof latest === "number" && Number.isFinite(prevLow) && latest < prevLow) {
+                const diff = prevLow - latest;
+                priceDropBlock = (
+                  <p className="text-xs text-green-600 mb-2">
+                    🔻 New low: down {diff.toFixed(2)} {item.currency}
+                  </p>
+                );
+              }
+            }
+
             return (
               <div key={item.id} className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col">
                 <div className="h-[52px] mb-2 overflow-hidden">
@@ -340,6 +402,8 @@ export default function HomePage() {
                 {item.status_message && (
                   <p className="text-xs text-gray-500 mb-2">{item.status_message}</p>
                 )}
+
+                {priceDropBlock}
 
                 {hasPrice ? (
                   <p className="text-[26px] font-bold text-gray-900 mb-1">
@@ -406,10 +470,10 @@ export default function HomePage() {
 
           <button
             onClick={sendMagicLink}
-            disabled={authLoading}
+            disabled={authSending}
             className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-60"
           >
-            {authLoading ? "Sending..." : "Send magic link"}
+            {authSending ? "Sending..." : "Send magic link"}
           </button>
 
           <button
