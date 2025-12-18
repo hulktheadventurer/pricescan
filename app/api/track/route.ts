@@ -9,7 +9,6 @@ export const dynamic = "force-dynamic";
 function extractId(input: string): string | null {
   if (!input) return null;
 
-  // If user just types the ID (9+ digits)
   if (/^\d{9,}$/.test(input)) return input;
 
   try {
@@ -28,7 +27,6 @@ function jsonError(message: string, status = 500, extra?: any) {
   );
 }
 
-// Generic timeout helper (prevents hanging requests)
 async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   let t: NodeJS.Timeout | null = null;
 
@@ -43,12 +41,15 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
   }
 }
 
+// Turn a Supabase PostgrestBuilder into a real Promise (fixes TS build error)
+function exec<T>(builder: any): Promise<T> {
+  return builder.then((r: T) => r);
+}
+
 // Fetch from eBay with hard timeouts
 async function fetchEbayItem(id: string) {
-  // 1) get token (can hang if env missing / oauth call stuck)
   const token = await withTimeout(getEbayAccessToken(), 12_000, "getEbayAccessToken");
 
-  // 2) call eBay Browse API with AbortController timeout
   const controller = new AbortController();
   const kill = setTimeout(() => controller.abort(), 12_000);
 
@@ -72,7 +73,6 @@ async function fetchEbayItem(id: string) {
 
     const data = JSON.parse(text);
 
-    // Detect sold out / ended
     const isEnded = !!data.itemEndDate;
     const availability = data.availability?.availabilityStatus;
     const isSoldOut = availability === "OUT_OF_STOCK" || availability === "UNAVAILABLE";
@@ -131,7 +131,6 @@ export async function GET(req: NextRequest) {
 
 // POST used by /page.tsx
 export async function POST(req: NextRequest) {
-  // prevent hanging if body parsing stalls
   let body: any;
   try {
     body = await withTimeout(req.json(), 5_000, "parse JSON body");
@@ -161,83 +160,93 @@ export async function POST(req: NextRequest) {
 
   // 2) Check if user already tracks this URL
   const existing = await withTimeout(
-    supabaseAdmin
-      .from("tracked_products")
-      .select("id")
-      .eq("user_id", userId)
-      .eq("url", urlToSave)
-      .maybeSingle(),
+    exec(
+      supabaseAdmin
+        .from("tracked_products")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("url", urlToSave)
+        .maybeSingle()
+    ),
     8_000,
     "supabase select tracked_products"
   );
 
   let productId: string;
 
-  if (existing.data) {
-    productId = existing.data.id;
+  if ((existing as any).data) {
+    productId = (existing as any).data.id;
 
-    // ✅ Also update sold-out/ended state if it already exists (keeps badge accurate)
+    // Update status/title when re-tracking same URL
     await withTimeout(
-      supabaseAdmin
-        .from("tracked_products")
-        .update({
-          title: item.title,
-          is_sold_out: item.isSoldOut,
-          is_ended: item.isEnded,
-          status_message: item.statusMessage,
-          sku: id,
-          merchant: "ebay",
-          locale: "GB",
-        })
-        .eq("id", productId),
+      exec(
+        supabaseAdmin
+          .from("tracked_products")
+          .update({
+            title: item.title,
+            is_sold_out: item.isSoldOut,
+            is_ended: item.isEnded,
+            status_message: item.statusMessage,
+            sku: id,
+            merchant: "ebay",
+            locale: "GB",
+          })
+          .eq("id", productId)
+      ),
       8_000,
       "supabase update tracked_products"
     );
   } else {
     // 3) Insert new product
-    const { data: inserted, error: insertError } = await withTimeout(
-      supabaseAdmin
-        .from("tracked_products")
-        .insert({
-          user_id: userId,
-          url: urlToSave,
-          title: item.title,
-          merchant: "ebay",
-          locale: "GB",
-          sku: id,
-          is_sold_out: item.isSoldOut,
-          is_ended: item.isEnded,
-          status_message: item.statusMessage,
-        })
-        .select()
-        .single(),
+    const inserted = await withTimeout(
+      exec(
+        supabaseAdmin
+          .from("tracked_products")
+          .insert({
+            user_id: userId,
+            url: urlToSave,
+            title: item.title,
+            merchant: "ebay",
+            locale: "GB",
+            sku: id,
+            is_sold_out: item.isSoldOut,
+            is_ended: item.isEnded,
+            status_message: item.statusMessage,
+          })
+          .select()
+          .single()
+      ),
       10_000,
       "supabase insert tracked_products"
     );
 
-    if (insertError || !inserted) {
+    const insertError = (inserted as any).error;
+    if (insertError || !(inserted as any).data) {
       console.error("❌ Supabase insert error:", insertError);
       return jsonError("Failed to save item", 500, { insertError });
     }
 
-    productId = inserted.id;
+    productId = (inserted as any).data.id;
   }
 
   // 4) Insert price snapshot only if item is NOT sold-out/ended
   if (!item.isSoldOut && !item.isEnded) {
-    const { error: snapError } = await withTimeout(
-      supabaseAdmin.from("price_snapshots").insert({
-        product_id: productId,
-        price: item.price,
-        currency: item.currency,
-      }),
+    const snapRes = await withTimeout(
+      exec(
+        supabaseAdmin.from("price_snapshots").insert({
+          product_id: productId,
+          price: item.price,
+          currency: item.currency,
+        })
+      ),
       10_000,
       "supabase insert price_snapshots"
     );
 
+    const snapError = (snapRes as any).error;
     if (snapError) {
       console.error("❌ Supabase price_snapshots insert error:", snapError);
-      // Don't fail the whole request
+      // don't fail whole request
     }
   }
 
