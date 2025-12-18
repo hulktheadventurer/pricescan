@@ -36,6 +36,11 @@ type ProductRow = {
   seen_at: string | null;
 };
 
+type SupabaseResult<T> = {
+  data: T;
+  error: any;
+};
+
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`Timeout: ${label} (${ms}ms)`)), ms);
@@ -47,6 +52,11 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
       reject(e);
     });
   });
+}
+
+// Turn Supabase PostgrestBuilder into a real Promise (fixes TS unknown issues)
+function exec<T>(builder: any): Promise<T> {
+  return builder.then((r: T) => r);
 }
 
 export default function HomePage() {
@@ -74,7 +84,11 @@ export default function HomePage() {
   useEffect(() => {
     const run = async () => {
       try {
-        const { data } = await supabase.auth.getUser();
+        const { data } = await withTimeout(
+          supabase.auth.getUser(),
+          8000,
+          "supabase.auth.getUser"
+        );
         setSignedInEmail(data?.user?.email ?? null);
       } catch {
         setSignedInEmail(null);
@@ -120,7 +134,7 @@ export default function HomePage() {
       const { data: userData } = await withTimeout(
         supabase.auth.getUser(),
         8000,
-        "supabase.auth.getUser"
+        "supabase.auth.getUser (loadProducts)"
       );
 
       const user = userData?.user;
@@ -129,7 +143,7 @@ export default function HomePage() {
         return;
       }
 
-      const q = supabase
+      const builder = supabase
         .from("tracked_products")
         .select(
           `
@@ -153,11 +167,15 @@ export default function HomePage() {
         .order("created_at", { ascending: false })
         .order("seen_at", { foreignTable: "price_snapshots", ascending: false });
 
-      const { data, error } = await withTimeout(q, 12000, "supabase select tracked_products");
+      const { data, error } = await withTimeout(
+        exec<SupabaseResult<any[]>>(builder),
+        12000,
+        "supabase select tracked_products"
+      );
 
       if (error) {
         console.error("❌ loadProducts supabase error:", error);
-        toast.error(`Failed to load items: ${error.message}`);
+        toast.error(`Failed to load items: ${error.message || "unknown error"}`);
         setProducts([]);
         return;
       }
@@ -246,8 +264,8 @@ export default function HomePage() {
         8000,
         "supabase.auth.getUser (track)"
       );
-      const user = userData?.user;
 
+      const user = userData?.user;
       if (!user) {
         setLoading(false);
         setTrackStatus("❌ Not signed in.");
@@ -271,10 +289,7 @@ export default function HomePage() {
       }
 
       const json = await res.json().catch(() => ({} as any));
-
-      if (!res.ok) {
-        throw new Error(json?.error || `Track failed (${res.status})`);
-      }
+      if (!res.ok) throw new Error(json?.error || `Track failed (${res.status})`);
 
       toast.success("✅ Product added!");
       setTrackStatus("✅ Product added!");
