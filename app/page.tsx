@@ -3,14 +3,13 @@
 import React, { useEffect, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { toast } from "sonner";
-import { getEbayAffiliateLink } from "@/lib/affiliates/ebay";
 import Modal from "@/components/Modal";
 import PriceHistoryChart from "@/components/PriceHistoryChart";
+import { getEbayAffiliateLink } from "@/lib/affiliates/ebay";
 import {
   CurrencyCode,
   convertCurrency,
   isSupportedCurrency,
-  SUPPORTED_CURRENCIES,
 } from "@/lib/currency";
 
 type Snapshot = {
@@ -37,6 +36,19 @@ type ProductRow = {
   seen_at: string | null;
 };
 
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`Timeout: ${label} (${ms}ms)`)), ms);
+    p.then((v) => {
+      clearTimeout(t);
+      resolve(v);
+    }).catch((e) => {
+      clearTimeout(t);
+      reject(e);
+    });
+  });
+}
+
 export default function HomePage() {
   const supabase = createClientComponentClient();
 
@@ -49,79 +61,45 @@ export default function HomePage() {
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
   const [showChart, setShowChart] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(
-    null
-  );
+  const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
 
   const [trackStatus, setTrackStatus] = useState<string>("");
 
-  // Auth modal state
   const [authOpen, setAuthOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
-  // Keep the URL user tried to track, but DO NOT auto-track after login
-  const [pendingTrackUrl, setPendingTrackUrl] = useState<string | null>(null);
-
-  // Optional tiny “signed in” indicator
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null);
 
-  // Load saved currency + load products
   useEffect(() => {
-    const load = async () => {
-      const { data: userData } = await supabase.auth.getUser();
-      const user = userData?.user;
-
-      setSignedInEmail(user?.email ?? null);
-
-      if (user) {
-        const { data } = await supabase
-          .from("user_profile")
-          .select("currency")
-          .eq("user_id", user.id)
-          .maybeSingle();
-
-        if (data?.currency && isSupportedCurrency(data.currency)) {
-          setDisplayCurrency(data.currency as CurrencyCode);
-        }
+    const run = async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        setSignedInEmail(data?.user?.email ?? null);
+      } catch {
+        setSignedInEmail(null);
       }
-
       await loadProducts();
     };
-
-    load();
+    run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Listen to auth changes
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === "SIGNED_IN") {
         setSignedInEmail(session?.user?.email ?? null);
         await loadProducts();
-
-        // ✅ CRITICAL FIX: do NOT auto-call trackNow here
-        if (pendingTrackUrl) {
-          setUrl(pendingTrackUrl);
-          setPendingTrackUrl(null);
-          setTrackStatus("✅ Signed in. Click Track to continue.");
-          toast.success("Signed in. Click Track to continue.");
-        }
       }
-
       if (event === "SIGNED_OUT") {
         setSignedInEmail(null);
         setProducts([]);
       }
     });
-
-    return () => {
-      sub?.subscription?.unsubscribe();
-    };
+    return () => sub?.subscription?.unsubscribe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingTrackUrl]);
+  }, []);
 
-  // Listen to header currency updates
   useEffect(() => {
     const handler = (e: Event) => {
       const ce = e as CustomEvent<string>;
@@ -130,65 +108,64 @@ export default function HomePage() {
         setDisplayCurrency(next as CurrencyCode);
       }
     };
-
-    window.addEventListener(
-      "pricescan-currency-update",
-      handler as EventListener
-    );
-    return () => {
-      window.removeEventListener(
-        "pricescan-currency-update",
-        handler as EventListener
-      );
-    };
+    window.addEventListener("pricescan-currency-update", handler as EventListener);
+    return () =>
+      window.removeEventListener("pricescan-currency-update", handler as EventListener);
   }, []);
 
   async function loadProducts() {
     setLoadingProducts(true);
 
     try {
-      const { data: userData } = await supabase.auth.getUser();
-      const user = userData?.user;
+      const { data: userData } = await withTimeout(
+        supabase.auth.getUser(),
+        8000,
+        "supabase.auth.getUser"
+      );
 
+      const user = userData?.user;
       if (!user) {
         setProducts([]);
         return;
       }
 
-      const { data, error } = await supabase
+      const q = supabase
         .from("tracked_products")
         .select(
           `
-            id,
-            title,
-            url,
-            merchant,
-            locale,
-            sku,
-            is_sold_out,
-            is_ended,
-            status_message,
-            price_snapshots (
-              price,
-              currency,
-              seen_at
-            )
-          `
+          id,
+          title,
+          url,
+          merchant,
+          locale,
+          sku,
+          is_sold_out,
+          is_ended,
+          status_message,
+          price_snapshots (
+            price,
+            currency,
+            seen_at
+          )
+        `
         )
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
-        .order("seen_at", {
-          foreignTable: "price_snapshots",
-          ascending: false,
-        });
+        .order("seen_at", { foreignTable: "price_snapshots", ascending: false });
 
-      if (error) throw error;
+      const { data, error } = await withTimeout(q, 12000, "supabase select tracked_products");
+
+      if (error) {
+        console.error("❌ loadProducts supabase error:", error);
+        toast.error(`Failed to load items: ${error.message}`);
+        setProducts([]);
+        return;
+      }
 
       const mapped: ProductRow[] = (data || []).map((item: any) => {
         const snaps: Snapshot[] = Array.isArray(item.price_snapshots)
           ? [...item.price_snapshots].sort(
-              (a, b) =>
-                new Date(b.seen_at).getTime() - new Date(a.seen_at).getTime()
+              (a, b) => new Date(b.seen_at).getTime() - new Date(a.seen_at).getTime()
             )
           : [];
 
@@ -214,9 +191,10 @@ export default function HomePage() {
       });
 
       setProducts(mapped);
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to load tracked items.");
+    } catch (e: any) {
+      console.error("❌ loadProducts exception:", e);
+      toast.error(e?.message || "Failed to load items.");
+      setProducts([]);
     } finally {
       setLoadingProducts(false);
     }
@@ -224,16 +202,12 @@ export default function HomePage() {
 
   async function sendMagicLink() {
     const e = email.trim();
-    if (!e) {
-      toast.error("Enter your email.");
-      return;
-    }
+    if (!e) return toast.error("Enter your email.");
 
     setAuthLoading(true);
     try {
       const base =
-        process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ||
-        window.location.origin;
+        process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") || window.location.origin;
 
       const emailRedirectTo = `${base}/auth/callback`;
 
@@ -255,9 +229,8 @@ export default function HomePage() {
     }
   }
 
-  async function trackNow(forcedUrl?: string) {
-    const link = (forcedUrl ?? url).trim();
-
+  async function trackNow() {
+    const link = url.trim();
     if (!link) {
       toast.error("Please paste a product link.");
       setTrackStatus("❌ Please paste a product link.");
@@ -268,20 +241,22 @@ export default function HomePage() {
     setTrackStatus("⏳ Sending…");
 
     try {
-      const { data: userData } = await supabase.auth.getUser();
+      const { data: userData } = await withTimeout(
+        supabase.auth.getUser(),
+        8000,
+        "supabase.auth.getUser (track)"
+      );
       const user = userData?.user;
 
       if (!user) {
         setLoading(false);
         setTrackStatus("❌ Not signed in.");
-        setPendingTrackUrl(link);
         setAuthOpen(true);
         return;
       }
 
-      // ✅ Timeout so we never hang forever
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 20000);
+      const t = setTimeout(() => controller.abort(), 20000);
 
       let res: Response;
       try {
@@ -292,49 +267,39 @@ export default function HomePage() {
           signal: controller.signal,
         });
       } finally {
-        clearTimeout(timeout);
+        clearTimeout(t);
       }
 
-      const result = await res.json().catch(() => ({} as any));
-      if (!res.ok) throw new Error(result?.error || `Track failed (${res.status})`);
+      const json = await res.json().catch(() => ({} as any));
+
+      if (!res.ok) {
+        throw new Error(json?.error || `Track failed (${res.status})`);
+      }
 
       toast.success("✅ Product added!");
       setTrackStatus("✅ Product added!");
       setUrl("");
       await loadProducts();
-    } catch (err: any) {
-      console.error("❌ Track error:", err);
+    } catch (e: any) {
+      console.error("❌ track error:", e);
 
-      if (err?.name === "AbortError") {
-        toast.error("Track request timed out. Try again.");
-        setTrackStatus("❌ Timed out — try again.");
+      if (e?.name === "AbortError") {
+        toast.error("Track timed out. (Server/API hanging)");
+        setTrackStatus("❌ Timed out — server/API is hanging.");
       } else {
-        toast.error(err?.message || "Could not start tracking.");
-        setTrackStatus(`❌ ${err?.message || "Could not start tracking."}`);
+        toast.error(e?.message || "Track failed.");
+        setTrackStatus(`❌ ${e?.message || "Track failed."}`);
       }
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (loading) return;
-    await trackNow();
-  }
-
   async function handleDelete(id: string) {
     if (!confirm("Remove this item?")) return;
 
-    const { error } = await supabase
-      .from("tracked_products")
-      .delete()
-      .eq("id", id);
-
-    if (error) {
-      toast.error("Delete failed.");
-      return;
-    }
+    const { error } = await supabase.from("tracked_products").delete().eq("id", id);
+    if (error) return toast.error("Delete failed.");
 
     toast.success("Removed.");
     setProducts((prev) => prev.filter((p) => p.id !== id));
@@ -346,17 +311,11 @@ export default function HomePage() {
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      {signedInEmail ? (
-        <p className="text-xs text-gray-500 mb-4">Signed in as: {signedInEmail}</p>
-      ) : (
-        <p className="text-xs text-gray-500 mb-4">Not signed in.</p>
-      )}
+      <p className="text-xs text-gray-500 mb-6">
+        {signedInEmail ? `Signed in as: ${signedInEmail}` : "Not signed in."}
+      </p>
 
-      <form
-        noValidate
-        onSubmit={handleSubmit}
-        className="flex flex-col md:flex-row gap-3 w-full max-w-xl mx-auto mb-3"
-      >
+      <div className="flex flex-col md:flex-row gap-3 w-full max-w-xl mx-auto mb-3">
         <input
           type="text"
           inputMode="url"
@@ -367,13 +326,14 @@ export default function HomePage() {
         />
 
         <button
-          type="submit"
+          type="button"
+          onClick={trackNow}
           disabled={loading}
           className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-60"
         >
           {loading ? "Tracking..." : "Track"}
         </button>
-      </form>
+      </div>
 
       {trackStatus ? (
         <p className="text-sm text-gray-500 mb-5">{trackStatus}</p>
@@ -407,38 +367,11 @@ export default function HomePage() {
               displayCode = displayCurrency;
             }
 
-            let priceDropBlock: React.ReactNode = null;
-
-            if (
-              Array.isArray(item.price_snapshots) &&
-              item.price_snapshots.length > 1
-            ) {
-              const latest = item.price_snapshots[0].price;
-              const prevLow = Math.min(
-                ...item.price_snapshots.slice(1).map((s) => s.price)
-              );
-
-              if (latest < prevLow) {
-                const diff = prevLow - latest;
-                const pct = (diff / prevLow) * 100;
-
-                priceDropBlock = (
-                  <p className="text-sm text-green-600 font-semibold mb-2">
-                    📉 Price drop: -{item.currency} {diff.toFixed(2)} (-
-                    {pct.toFixed(1)}%)
-                  </p>
-                );
-              }
-            }
-
             const isSoldOut = !!item.is_sold_out;
             const isEnded = !!item.is_ended;
 
             return (
-              <div
-                key={item.id}
-                className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col"
-              >
+              <div key={item.id} className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col">
                 <div className="h-[52px] mb-2 overflow-hidden">
                   <p className="font-semibold text-[18px] line-clamp-2">
                     {item.title || "Untitled"}
@@ -450,39 +383,22 @@ export default function HomePage() {
                     SOLD OUT
                   </span>
                 )}
-
                 {isEnded && (
                   <span className="inline-block mb-2 px-2 py-1 text-xs font-semibold bg-gray-200 text-gray-600 rounded">
                     LISTING ENDED
                   </span>
                 )}
-
                 {item.status_message && (
-                  <p className="text-xs text-gray-500 mb-2">
-                    {item.status_message}
-                  </p>
+                  <p className="text-xs text-gray-500 mb-2">{item.status_message}</p>
                 )}
 
                 {hasPrice ? (
-                  <>
-                    <p className="text-[26px] font-bold text-gray-900 mb-1">
-                      {displayCode} {displayPrice.toFixed(2)}
-                    </p>
-                    {priceDropBlock}
-                  </>
+                  <p className="text-[26px] font-bold text-gray-900 mb-1">
+                    {displayCode} {displayPrice.toFixed(2)}
+                  </p>
                 ) : (
                   <p className="text-sm text-blue-500 animate-pulse">
                     No price yet (sold out/ended or pending)
-                  </p>
-                )}
-
-                {item.seen_at && (
-                  <p className="text-xs text-gray-400 italic mb-4">
-                    Updated{" "}
-                    {new Date(item.seen_at).toLocaleString("en-GB", {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    })}
                   </p>
                 )}
 
