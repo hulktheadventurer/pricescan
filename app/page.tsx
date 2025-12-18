@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { toast } from "sonner";
 import Modal from "@/components/Modal";
@@ -36,34 +36,17 @@ type ProductRow = {
   seen_at: string | null;
 };
 
-type SupabaseResult<T> = {
-  data: T;
-  error: any;
-};
-
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`Timeout: ${label} (${ms}ms)`)), ms);
-    p.then((v) => {
-      clearTimeout(t);
-      resolve(v);
-    }).catch((e) => {
-      clearTimeout(t);
-      reject(e);
-    });
-  });
-}
-
-// Turn Supabase PostgrestBuilder into a real Promise (fixes TS unknown issues)
-function exec<T>(builder: any): Promise<T> {
-  return builder.then((r: T) => r);
-}
-
 export default function HomePage() {
   const supabase = createClientComponentClient();
 
+  // ✅ stable auth: session once + cache user
+  const [authChecked, setAuthChecked] = useState(false);
+  const [user, setUser] = useState<any>(null);
+
+  // UI state
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
+  const [trackStatus, setTrackStatus] = useState("");
 
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
@@ -73,61 +56,11 @@ export default function HomePage() {
   const [showChart, setShowChart] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
 
-  const [trackStatus, setTrackStatus] = useState<string>("");
-
   const [authOpen, setAuthOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
-  // Auth UX
-  const [authChecked, setAuthChecked] = useState(false);
-  const [signedInEmail, setSignedInEmail] = useState<string | null>(null);
-
-  // Prevent infinite retry loops
-  const didRetryAuthOnce = useRef(false);
-  const loadProductsInFlight = useRef(false);
-
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const { data } = await withTimeout(
-          supabase.auth.getUser(),
-          20000,
-          "supabase.auth.getUser (initial)"
-        );
-        setSignedInEmail(data?.user?.email ?? null);
-      } catch {
-        // Don't toast here — auth can be slow
-        setSignedInEmail(null);
-      } finally {
-        setAuthChecked(true);
-      }
-
-      await loadProducts();
-    };
-
-    run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === "SIGNED_IN") {
-        setSignedInEmail(session?.user?.email ?? null);
-        setAuthChecked(true);
-        await loadProducts();
-      }
-      if (event === "SIGNED_OUT") {
-        setSignedInEmail(null);
-        setProducts([]);
-        setAuthChecked(true);
-      }
-    });
-
-    return () => sub?.subscription?.unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+  // Currency selector updates (keeps your existing pattern)
   useEffect(() => {
     const handler = (e: Event) => {
       const ce = e as CustomEvent<string>;
@@ -141,30 +74,38 @@ export default function HomePage() {
       window.removeEventListener("pricescan-currency-update", handler as EventListener);
   }, []);
 
-  async function loadProducts() {
-    if (loadProductsInFlight.current) return;
-    loadProductsInFlight.current = true;
+  // ✅ auth init once + listen changes
+  useEffect(() => {
+    const init = async () => {
+      const { data } = await supabase.auth.getSession();
+      setUser(data.session?.user ?? null);
+      setAuthChecked(true);
+      await loadProducts(data.session?.user ?? null);
+    };
 
+    init();
+
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
+      setAuthChecked(true);
+      await loadProducts(nextUser);
+    });
+
+    return () => sub.subscription.unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function loadProducts(currentUser: any) {
     setLoadingProducts(true);
 
     try {
-      const { data: userData } = await withTimeout(
-        supabase.auth.getUser(),
-        20000,
-        "supabase.auth.getUser (loadProducts)"
-      );
-
-      const user = userData?.user;
-
-      setSignedInEmail(user?.email ?? null);
-      setAuthChecked(true);
-
-      if (!user) {
+      if (!currentUser) {
         setProducts([]);
         return;
       }
 
-      const builder = supabase
+      const { data, error } = await supabase
         .from("tracked_products")
         .select(
           `
@@ -184,22 +125,11 @@ export default function HomePage() {
           )
         `
         )
-        .eq("user_id", user.id)
+        .eq("user_id", currentUser.id)
         .order("created_at", { ascending: false })
         .order("seen_at", { foreignTable: "price_snapshots", ascending: false });
 
-      const { data, error } = await withTimeout(
-        exec<SupabaseResult<any[]>>(builder),
-        20000,
-        "supabase select tracked_products"
-      );
-
-      if (error) {
-        console.error("❌ loadProducts supabase error:", error);
-        toast.error(`Failed to load items: ${error.message || "unknown error"}`);
-        setProducts([]);
-        return;
-      }
+      if (error) throw error;
 
       const mapped: ProductRow[] = (data || []).map((item: any) => {
         const snaps: Snapshot[] = Array.isArray(item.price_snapshots)
@@ -231,29 +161,11 @@ export default function HomePage() {
 
       setProducts(mapped);
     } catch (e: any) {
-      const msg = String(e?.message || "");
-      console.error("❌ loadProducts exception:", e);
-
-      // ✅ Soft retry if auth is just slow
-      if (
-        msg.startsWith("Timeout: supabase.auth.getUser") &&
-        !didRetryAuthOnce.current
-      ) {
-        didRetryAuthOnce.current = true;
-        setTimeout(() => {
-          loadProducts();
-        }, 1200);
-        return;
-      }
-
-      // Only toast for real failures
-      toast.error(e?.message || "Failed to load items.");
+      console.error("❌ loadProducts error:", e);
+      toast.error(e?.message || "Failed to load items");
       setProducts([]);
-      setAuthChecked(true);
-      setSignedInEmail(null);
     } finally {
       setLoadingProducts(false);
-      loadProductsInFlight.current = false;
     }
   }
 
@@ -265,7 +177,6 @@ export default function HomePage() {
     try {
       const base =
         process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") || window.location.origin;
-
       const emailRedirectTo = `${base}/auth/callback`;
 
       const { error } = await supabase.auth.signInWithOtp({
@@ -294,59 +205,36 @@ export default function HomePage() {
       return;
     }
 
+    if (!user) {
+      setTrackStatus("❌ Not signed in.");
+      setAuthOpen(true);
+      return;
+    }
+
     setLoading(true);
     setTrackStatus("⏳ Sending…");
 
     try {
-      const { data: userData } = await withTimeout(
-        supabase.auth.getUser(),
-        20000,
-        "supabase.auth.getUser (track)"
-      );
-
-      const user = userData?.user;
-      setSignedInEmail(user?.email ?? null);
-      setAuthChecked(true);
-
-      if (!user) {
-        setLoading(false);
-        setTrackStatus("❌ Not signed in.");
-        setAuthOpen(true);
-        return;
-      }
-
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 20000);
-
-      let res: Response;
-      try {
-        res = await fetch("/api/track", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: link, user_id: user.id }),
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(t);
-      }
+      const res = await fetch("/api/track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: link, user_id: user.id }),
+      });
 
       const json = await res.json().catch(() => ({} as any));
-      if (!res.ok) throw new Error(json?.error || `Track failed (${res.status})`);
+
+      if (!res.ok) {
+        throw new Error(json?.error || `Track failed (${res.status})`);
+      }
 
       toast.success("✅ Product added!");
       setTrackStatus("✅ Product added!");
       setUrl("");
-      await loadProducts();
+      await loadProducts(user);
     } catch (e: any) {
       console.error("❌ track error:", e);
-
-      if (e?.name === "AbortError") {
-        toast.error("Track timed out. (Server/API hanging)");
-        setTrackStatus("❌ Timed out — server/API is hanging.");
-      } else {
-        toast.error(e?.message || "Track failed.");
-        setTrackStatus(`❌ ${e?.message || "Track failed."}`);
-      }
+      toast.error(e?.message || "Track failed.");
+      setTrackStatus(`❌ ${e?.message || "Track failed."}`);
     } finally {
       setLoading(false);
     }
@@ -364,8 +252,8 @@ export default function HomePage() {
 
   const authLine = !authChecked
     ? "Checking sign-in…"
-    : signedInEmail
-    ? `Signed in as: ${signedInEmail}`
+    : user
+    ? `Signed in as: ${user.email}`
     : "Not signed in.";
 
   return (
@@ -432,10 +320,7 @@ export default function HomePage() {
             const isEnded = !!item.is_ended;
 
             return (
-              <div
-                key={item.id}
-                className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col"
-              >
+              <div key={item.id} className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col">
                 <div className="h-[52px] mb-2 overflow-hidden">
                   <p className="font-semibold text-[18px] line-clamp-2">
                     {item.title || "Untitled"}
