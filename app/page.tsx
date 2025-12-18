@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { toast } from "sonner";
 import Modal from "@/components/Modal";
@@ -79,22 +79,33 @@ export default function HomePage() {
   const [email, setEmail] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
+  // Auth UX
+  const [authChecked, setAuthChecked] = useState(false);
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null);
+
+  // Prevent infinite retry loops
+  const didRetryAuthOnce = useRef(false);
+  const loadProductsInFlight = useRef(false);
 
   useEffect(() => {
     const run = async () => {
       try {
         const { data } = await withTimeout(
           supabase.auth.getUser(),
-          8000,
-          "supabase.auth.getUser"
+          20000,
+          "supabase.auth.getUser (initial)"
         );
         setSignedInEmail(data?.user?.email ?? null);
       } catch {
+        // Don't toast here — auth can be slow
         setSignedInEmail(null);
+      } finally {
+        setAuthChecked(true);
       }
+
       await loadProducts();
     };
+
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -103,13 +114,16 @@ export default function HomePage() {
     const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === "SIGNED_IN") {
         setSignedInEmail(session?.user?.email ?? null);
+        setAuthChecked(true);
         await loadProducts();
       }
       if (event === "SIGNED_OUT") {
         setSignedInEmail(null);
         setProducts([]);
+        setAuthChecked(true);
       }
     });
+
     return () => sub?.subscription?.unsubscribe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -128,16 +142,23 @@ export default function HomePage() {
   }, []);
 
   async function loadProducts() {
+    if (loadProductsInFlight.current) return;
+    loadProductsInFlight.current = true;
+
     setLoadingProducts(true);
 
     try {
       const { data: userData } = await withTimeout(
         supabase.auth.getUser(),
-        8000,
+        20000,
         "supabase.auth.getUser (loadProducts)"
       );
 
       const user = userData?.user;
+
+      setSignedInEmail(user?.email ?? null);
+      setAuthChecked(true);
+
       if (!user) {
         setProducts([]);
         return;
@@ -169,7 +190,7 @@ export default function HomePage() {
 
       const { data, error } = await withTimeout(
         exec<SupabaseResult<any[]>>(builder),
-        12000,
+        20000,
         "supabase select tracked_products"
       );
 
@@ -210,11 +231,29 @@ export default function HomePage() {
 
       setProducts(mapped);
     } catch (e: any) {
+      const msg = String(e?.message || "");
       console.error("❌ loadProducts exception:", e);
+
+      // ✅ Soft retry if auth is just slow
+      if (
+        msg.startsWith("Timeout: supabase.auth.getUser") &&
+        !didRetryAuthOnce.current
+      ) {
+        didRetryAuthOnce.current = true;
+        setTimeout(() => {
+          loadProducts();
+        }, 1200);
+        return;
+      }
+
+      // Only toast for real failures
       toast.error(e?.message || "Failed to load items.");
       setProducts([]);
+      setAuthChecked(true);
+      setSignedInEmail(null);
     } finally {
       setLoadingProducts(false);
+      loadProductsInFlight.current = false;
     }
   }
 
@@ -261,11 +300,14 @@ export default function HomePage() {
     try {
       const { data: userData } = await withTimeout(
         supabase.auth.getUser(),
-        8000,
+        20000,
         "supabase.auth.getUser (track)"
       );
 
       const user = userData?.user;
+      setSignedInEmail(user?.email ?? null);
+      setAuthChecked(true);
+
       if (!user) {
         setLoading(false);
         setTrackStatus("❌ Not signed in.");
@@ -320,15 +362,19 @@ export default function HomePage() {
     setProducts((prev) => prev.filter((p) => p.id !== id));
   }
 
+  const authLine = !authChecked
+    ? "Checking sign-in…"
+    : signedInEmail
+    ? `Signed in as: ${signedInEmail}`
+    : "Not signed in.";
+
   return (
     <main className="max-w-6xl mx-auto px-4 py-10 text-center">
       <h1 className="text-3xl font-bold mb-2 text-blue-600">
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      <p className="text-xs text-gray-500 mb-6">
-        {signedInEmail ? `Signed in as: ${signedInEmail}` : "Not signed in."}
-      </p>
+      <p className="text-xs text-gray-500 mb-6">{authLine}</p>
 
       <div className="flex flex-col md:flex-row gap-3 w-full max-w-xl mx-auto mb-3">
         <input
@@ -386,7 +432,10 @@ export default function HomePage() {
             const isEnded = !!item.is_ended;
 
             return (
-              <div key={item.id} className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col">
+              <div
+                key={item.id}
+                className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col"
+              >
                 <div className="h-[52px] mb-2 overflow-hidden">
                   <p className="font-semibold text-[18px] line-clamp-2">
                     {item.title || "Untitled"}
