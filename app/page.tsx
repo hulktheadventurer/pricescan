@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { toast } from "sonner";
 import Modal from "@/components/Modal";
@@ -30,10 +30,13 @@ type ProductRow = {
   is_ended?: boolean | null;
   status_message?: string | null;
 
-  price_snapshots: Snapshot[];
+  // list view only needs latest snapshot
   latest_price: number | null;
   currency: string;
   seen_at: string | null;
+
+  // chart will be loaded on demand
+  price_snapshots?: Snapshot[];
 };
 
 function timeout<T>(ms: number, label: string) {
@@ -42,7 +45,7 @@ function timeout<T>(ms: number, label: string) {
   );
 }
 
-// Supabase PostgrestBuilder is a "thenable" — turn it into a real Promise
+// Supabase PostgrestBuilder is a thenable -> normalize to real Promise
 function exec<T>(builder: any): Promise<T> {
   return builder.then((r: T) => r);
 }
@@ -64,14 +67,20 @@ export default function HomePage() {
   // Currency
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
-  // Modal (chart)
+  // Chart modal
   const [showChart, setShowChart] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartSnapshots, setChartSnapshots] = useState<Snapshot[]>([]);
 
   // Auth modal
   const [authOpen, setAuthOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [authSending, setAuthSending] = useState(false);
+
+  // prevent overlapping loads + retry storms
+  const loadInFlight = useRef(false);
+  const retryTimer = useRef<any>(null);
 
   const signedInText = useMemo(() => {
     if (!authChecked) return "Checking sign-in…";
@@ -79,7 +88,7 @@ export default function HomePage() {
     return `Signed in as: ${user.email}`;
   }, [authChecked, user]);
 
-  // Keep your existing “currency selector emits event” pattern
+  // Currency event
   useEffect(() => {
     const handler = (e: Event) => {
       const ce = e as CustomEvent<string>;
@@ -91,7 +100,7 @@ export default function HomePage() {
       window.removeEventListener("pricescan-currency-update", handler as EventListener);
   }, []);
 
-  // Init auth once + react to changes
+  // Init auth once + subscribe changes
   useEffect(() => {
     const init = async () => {
       try {
@@ -99,44 +108,46 @@ export default function HomePage() {
           supabase.auth.getSession(),
           timeout<any>(15000, "supabase.auth.getSession"),
         ]);
-        setUser(data?.session?.user ?? null);
+        const u = data?.session?.user ?? null;
+        setUser(u);
       } catch {
         setUser(null);
       } finally {
         setAuthChecked(true);
       }
 
-      await loadProducts(dataUserSafe());
+      await loadProducts();
     };
 
     const sub = supabase.auth.onAuthStateChange(async (_event, session) => {
       const next = session?.user ?? null;
       setUser(next);
       setAuthChecked(true);
-      await loadProducts(next);
+      await loadProducts();
     });
 
     init();
 
     return () => {
       sub.data.subscription.unsubscribe();
+      if (retryTimer.current) clearTimeout(retryTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function dataUserSafe() {
-    return user ?? null;
-  }
+  async function loadProducts() {
+    if (loadInFlight.current) return;
+    loadInFlight.current = true;
 
-  async function loadProducts(currentUser: any) {
     setLoadingProducts(true);
 
     try {
-      if (!currentUser) {
+      if (!user) {
         setProducts([]);
         return;
       }
 
+      // ✅ SPEED: only fetch latest snapshot for list view (limit 1)
       const builder = supabase
         .from("tracked_products")
         .select(
@@ -157,13 +168,14 @@ export default function HomePage() {
           )
         `
         )
-        .eq("user_id", currentUser.id)
+        .eq("user_id", user.id)
         .order("created_at", { ascending: false })
-        .order("seen_at", { foreignTable: "price_snapshots", ascending: false });
+        .order("seen_at", { foreignTable: "price_snapshots", ascending: false })
+        .limit(1, { foreignTable: "price_snapshots" });
 
       const res: any = await Promise.race([
         exec<any>(builder),
-        timeout<any>(20000, "supabase select tracked_products"),
+        timeout<any>(25000, "supabase select tracked_products"), // slightly longer
       ]);
 
       if (res?.error) throw res.error;
@@ -184,12 +196,9 @@ export default function HomePage() {
           merchant: item.merchant ?? null,
           locale: item.locale ?? null,
           sku: item.sku ?? null,
-
           is_sold_out: item.is_sold_out ?? null,
           is_ended: item.is_ended ?? null,
           status_message: item.status_message ?? null,
-
-          price_snapshots: snaps,
           latest_price: last?.price ?? null,
           currency: last?.currency ?? "GBP",
           seen_at: last?.seen_at ?? null,
@@ -198,12 +207,52 @@ export default function HomePage() {
 
       setProducts(mapped);
     } catch (e: any) {
+      const msg = String(e?.message || "");
       console.error("❌ loadProducts failed:", e);
-      // IMPORTANT: don't leave UI stuck loading
-      setProducts([]);
+
+      // ✅ CRITICAL FIX: do NOT wipe products on timeout
+      if (msg.startsWith("Timeout: supabase select tracked_products")) {
+        toast.message("Loading is slow — retrying…");
+        if (retryTimer.current) clearTimeout(retryTimer.current);
+        retryTimer.current = setTimeout(() => {
+          loadProducts();
+        }, 1500);
+        return;
+      }
+
       toast.error(e?.message || "Failed to load items.");
+      // keep old products, don’t clear
     } finally {
       setLoadingProducts(false);
+      loadInFlight.current = false;
+    }
+  }
+
+  async function fetchHistory(productId: string) {
+    setChartLoading(true);
+    setChartSnapshots([]);
+
+    try {
+      const builder = supabase
+        .from("price_snapshots")
+        .select("price,currency,seen_at")
+        .eq("product_id", productId)
+        .order("seen_at", { ascending: true });
+
+      const res: any = await Promise.race([
+        exec<any>(builder),
+        timeout<any>(20000, "supabase select price_snapshots"),
+      ]);
+
+      if (res?.error) throw res.error;
+
+      setChartSnapshots(res?.data || []);
+    } catch (e: any) {
+      console.error("❌ fetchHistory failed:", e);
+      toast.error(e?.message || "Failed to load price history.");
+      setChartSnapshots([]);
+    } finally {
+      setChartLoading(false);
     }
   }
 
@@ -270,11 +319,9 @@ export default function HomePage() {
       setStatusLine("✅ Product added!");
       setUrl("");
 
-      // Reload list (also timeout-safe)
-      await loadProducts(user);
+      await loadProducts();
     } catch (e: any) {
       console.error("❌ trackNow failed:", e);
-
       if (e?.name === "AbortError") {
         toast.error("Track timed out (API didn’t respond).");
         setStatusLine("❌ Timed out — API didn’t respond.");
@@ -337,7 +384,7 @@ export default function HomePage() {
 
       {statusLine ? <p className="text-sm text-gray-500 mb-5">{statusLine}</p> : <div className="mb-5" />}
 
-      {loadingProducts ? (
+      {loadingProducts && products.length === 0 ? (
         <p className="text-gray-400">Loading…</p>
       ) : products.length === 0 ? (
         <p className="text-gray-500">No items yet — track something!</p>
@@ -366,21 +413,6 @@ export default function HomePage() {
             const isSoldOut = !!item.is_sold_out;
             const isEnded = !!item.is_ended;
 
-            // Price drop block (kept, but safe)
-            let priceDropBlock: React.ReactNode = null;
-            if (Array.isArray(item.price_snapshots) && item.price_snapshots.length > 1) {
-              const latest = item.price_snapshots[0]?.price;
-              const prevLow = Math.min(...item.price_snapshots.slice(1).map((s) => s.price));
-              if (typeof latest === "number" && Number.isFinite(prevLow) && latest < prevLow) {
-                const diff = prevLow - latest;
-                priceDropBlock = (
-                  <p className="text-xs text-green-600 mb-2">
-                    🔻 New low: down {diff.toFixed(2)} {item.currency}
-                  </p>
-                );
-              }
-            }
-
             return (
               <div key={item.id} className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col">
                 <div className="h-[52px] mb-2 overflow-hidden">
@@ -403,8 +435,6 @@ export default function HomePage() {
                   <p className="text-xs text-gray-500 mb-2">{item.status_message}</p>
                 )}
 
-                {priceDropBlock}
-
                 {hasPrice ? (
                   <p className="text-[26px] font-bold text-gray-900 mb-1">
                     {displayCode} {displayPrice.toFixed(2)}
@@ -416,9 +446,10 @@ export default function HomePage() {
                 )}
 
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     setSelectedProduct(item);
                     setShowChart(true);
+                    await fetchHistory(item.id);
                   }}
                   className="text-blue-600 text-sm mb-4 hover:underline text-left"
                 >
@@ -450,7 +481,11 @@ export default function HomePage() {
 
       <Modal open={showChart} onClose={() => setShowChart(false)}>
         <h2 className="text-xl font-semibold mb-3">Price History</h2>
-        <PriceHistoryChart snapshots={selectedProduct?.price_snapshots || []} />
+        {chartLoading ? (
+          <p className="text-gray-400">Loading chart…</p>
+        ) : (
+          <PriceHistoryChart snapshots={chartSnapshots} />
+        )}
       </Modal>
 
       <Modal open={authOpen} onClose={() => setAuthOpen(false)}>
