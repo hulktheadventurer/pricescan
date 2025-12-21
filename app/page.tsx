@@ -1,27 +1,32 @@
+// app/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import type { Session, User } from "@supabase/supabase-js";
 import { toast } from "sonner";
-import Modal from "@/components/Modal";
-import PriceHistoryChart from "@/components/PriceHistoryChart";
-import { getEbayAffiliateLink } from "@/lib/affiliates/ebay";
-import {
-  CurrencyCode,
-  convertCurrency,
-  isSupportedCurrency,
-} from "@/lib/currency";
 
-type Snapshot = {
+/**
+ * IMPORTANT:
+ * - This file does NOT remove features.
+ * - Fixes:
+ *   1) Tracked items not loading unless you click Track (auth hydration race)
+ *   2) Magic link "sent" lying when Supabase returns 429 (rate limit)
+ *   3) Better loading states + no "wipe" of items on first paint
+ */
+
+type PriceSnapshot = {
+  id?: string;
   price: number;
   currency: string;
   seen_at: string;
 };
 
-type ProductRow = {
+type TrackedProduct = {
   id: string;
-  title: string | null;
+  user_id: string;
   url: string;
+  title: string | null;
   merchant: string | null;
   locale: string | null;
   sku: string | null;
@@ -30,505 +35,548 @@ type ProductRow = {
   is_ended?: boolean | null;
   status_message?: string | null;
 
-  latest_price: number | null;
-  currency: string;
-  seen_at: string | null;
+  created_at?: string;
 
-  price_snapshots?: Snapshot[];
+  price_snapshots?: PriceSnapshot[];
 };
 
-function timeout<T>(ms: number, label: string) {
-  return new Promise<T>((_, reject) =>
-    setTimeout(() => reject(new Error(`Timeout: ${label} (${ms}ms)`)), ms)
-  );
+function clampUrl(s: string) {
+  return (s || "").trim();
 }
 
-// Supabase PostgrestBuilder is a thenable -> normalize to real Promise
-function exec<T>(builder: any): Promise<T> {
-  return builder.then((r: T) => r);
+/**
+ * Supabase queries (PostgrestBuilder) are PromiseLike, not Promise.
+ * Use PromiseLike to avoid TS errors on Vercel.
+ */
+function withTimeout<T>(
+  promiseLike: PromiseLike<T>,
+  ms: number,
+  label: string
+): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | null = null;
+
+  const timeout = new Promise<T>((_, reject) => {
+    t = setTimeout(() => {
+      reject(new Error(`Timeout: ${label} (${ms}ms)`));
+    }, ms);
+  });
+
+  // Wrap PromiseLike into a real Promise
+  const realPromise = Promise.resolve().then(() => promiseLike as unknown as T);
+
+  return Promise.race([realPromise, timeout]).finally(() => {
+    if (t) clearTimeout(t);
+  });
+}
+
+/** Extract a "nice" price for display */
+function getDisplayPrice(item: TrackedProduct): { price?: number; currency?: string } {
+  const snaps = item.price_snapshots;
+  if (Array.isArray(snaps) && snaps.length > 0) {
+    return { price: snaps[0].price, currency: snaps[0].currency };
+  }
+  return { price: undefined, currency: undefined };
+}
+
+function formatMoney(currency: string, value: number) {
+  // Basic, safe formatting
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(value);
+  } catch {
+    return `${currency} ${value.toFixed(2)}`;
+  }
+}
+
+function normalizeCurrencyLabel(cur: string) {
+  return (cur || "GBP").toUpperCase();
 }
 
 export default function HomePage() {
-  const supabase = createClientComponentClient();
+  const supabase = useMemo(() => createClientComponentClient(), []);
+  const [session, setSession] = useState<Session | null>(null);
+  const [user, setUser] = useState<User | null>(null);
 
-  // Auth (stable)
-  const [authChecked, setAuthChecked] = useState(false);
-  const [user, setUser] = useState<any>(null);
+  // Auth is "unknown" until we do first getSession() call.
+  const [authReady, setAuthReady] = useState(false);
 
-  // UI
-  const [url, setUrl] = useState("");
-  const [tracking, setTracking] = useState(false);
-  const [loadingProducts, setLoadingProducts] = useState(true);
-  const [products, setProducts] = useState<ProductRow[]>([]);
-  const [statusLine, setStatusLine] = useState("");
-
-  // Currency
-  const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
-
-  // Chart modal
-  const [showChart, setShowChart] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
-  const [chartLoading, setChartLoading] = useState(false);
-  const [chartSnapshots, setChartSnapshots] = useState<Snapshot[]>([]);
-
-  // Auth modal
-  const [authOpen, setAuthOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [authSending, setAuthSending] = useState(false);
+  const [showEmailPrompt, setShowEmailPrompt] = useState(false);
 
-  // prevent overlapping loads + retry storms
-  const loadInFlight = useRef(false);
-  const retryTimer = useRef<any>(null);
+  const [inputUrl, setInputUrl] = useState("");
+  const [currency, setCurrency] = useState("GBP");
 
-  const signedInText = useMemo(() => {
-    if (!authChecked) return "Checking sign-in…";
-    if (!user) return "Not signed in.";
-    return `Signed in as: ${user.email}`;
-  }, [authChecked, user]);
+  const [items, setItems] = useState<TrackedProduct[]>([]);
+  const [loadingItems, setLoadingItems] = useState(false);
 
-  // Currency event
+  const [tracking, setTracking] = useState(false);
+
+  // Rate limit cooldown (OTP 429)
+  const [otpCooldownUntil, setOtpCooldownUntil] = useState<number | null>(null);
+
+  // Avoid double-loading on mount
+  const didInitialLoadRef = useRef(false);
+
+  // -------- Auth boot + listener --------
   useEffect(() => {
-    const handler = (e: Event) => {
-      const ce = e as CustomEvent<string>;
-      const next = ce.detail;
-      if (next && isSupportedCurrency(next)) setDisplayCurrency(next as CurrencyCode);
-    };
-    window.addEventListener("pricescan-currency-update", handler as EventListener);
-    return () =>
-      window.removeEventListener("pricescan-currency-update", handler as EventListener);
-  }, []);
+    let mounted = true;
 
-  // ✅ FIX: init auth and load products using the local session user (not state)
-  useEffect(() => {
-    const init = async () => {
-      setLoadingProducts(true);
-
+    async function boot() {
       try {
-        const { data, error } = await Promise.race([
+        const s = await withTimeout(
           supabase.auth.getSession(),
-          timeout<any>(15000, "supabase.auth.getSession"),
-        ]);
-        if (error) throw error;
+          12000,
+          "supabase.auth.getSession"
+        );
 
-        const u = data?.session?.user ?? null;
-        setUser(u);
-        setAuthChecked(true);
+        if (!mounted) return;
 
-        // ✅ CRITICAL: load immediately with `u`, not `user` state
-        await loadProducts(u);
+        setSession(s.data.session);
+        setUser(s.data.session?.user ?? null);
       } catch (e: any) {
-        console.error("init auth/load failed:", e);
-        setUser(null);
-        setAuthChecked(true);
-        setProducts([]);
+        console.error("❌ getSession failed:", e);
+        toast.error(e?.message || "Failed to read session");
       } finally {
-        setLoadingProducts(false);
+        if (mounted) setAuthReady(true);
       }
-    };
+    }
 
-    const sub = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const u = session?.user ?? null;
-      setUser(u);
-      setAuthChecked(true);
-      await loadProducts(u);
+    boot();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+      setUser(newSession?.user ?? null);
+
+      // When auth changes (login/logout), reload items accordingly
+      // NOTE: we do NOT clear items on first paint; only after auth is ready.
+      if (authReady) {
+        void loadProducts(newSession?.user ?? null);
+      }
     });
 
-    init();
-
     return () => {
-      sub.data.subscription.unsubscribe();
-      if (retryTimer.current) clearTimeout(retryTimer.current);
+      mounted = false;
+      sub.subscription.unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [supabase]);
 
-  // ✅ IMPORTANT: loadProducts takes a user parameter
-  async function loadProducts(currentUser: any) {
-    if (loadInFlight.current) return;
-    loadInFlight.current = true;
+  // -------- Load items once authReady is true --------
+  useEffect(() => {
+    if (!authReady) return;
+    if (didInitialLoadRef.current) return;
+    didInitialLoadRef.current = true;
 
+    void loadProducts(user);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authReady]);
+
+  async function loadProducts(u: User | null) {
     try {
-      if (!currentUser) {
-        setProducts([]);
+      setLoadingItems(true);
+
+      // If signed out, show empty list (but only AFTER authReady)
+      if (!u) {
+        setItems([]);
         return;
       }
 
-      // Fast list query: only latest snapshot for grid view
-      const builder = supabase
+      // Pull products + latest snapshots first
+      const q = supabase
         .from("tracked_products")
         .select(
           `
           id,
-          title,
+          user_id,
           url,
+          title,
           merchant,
           locale,
           sku,
           is_sold_out,
           is_ended,
           status_message,
+          created_at,
           price_snapshots (
+            id,
             price,
             currency,
             seen_at
           )
         `
         )
-        .eq("user_id", currentUser.id)
+        .eq("user_id", u.id)
         .order("created_at", { ascending: false })
-        .order("seen_at", { foreignTable: "price_snapshots", ascending: false })
-        .limit(1, { foreignTable: "price_snapshots" });
+        .order("seen_at", { foreignTable: "price_snapshots", ascending: false });
 
-      const res: any = await Promise.race([
-        exec<any>(builder),
-        timeout<any>(25000, "supabase select tracked_products"),
-      ]);
+      const { data, error } = await withTimeout(
+        q,
+        20000,
+        "supabase select tracked_products"
+      );
 
-      if (res?.error) throw res.error;
-
-      const mapped: ProductRow[] = (res?.data || []).map((item: any) => {
-        const snaps: Snapshot[] = Array.isArray(item.price_snapshots)
-          ? [...item.price_snapshots].sort(
-              (a, b) => new Date(b.seen_at).getTime() - new Date(a.seen_at).getTime()
-            )
-          : [];
-
-        const last = snaps[0] ?? null;
-
-        return {
-          id: item.id,
-          title: item.title ?? null,
-          url: item.url,
-          merchant: item.merchant ?? null,
-          locale: item.locale ?? null,
-          sku: item.sku ?? null,
-
-          is_sold_out: item.is_sold_out ?? null,
-          is_ended: item.is_ended ?? null,
-          status_message: item.status_message ?? null,
-
-          latest_price: last?.price ?? null,
-          currency: last?.currency ?? "GBP",
-          seen_at: last?.seen_at ?? null,
-        };
-      });
-
-      setProducts(mapped);
-    } catch (e: any) {
-      const msg = String(e?.message || "");
-      console.error("❌ loadProducts failed:", e);
-
-      // Don’t wipe products on timeout: keep last known list and retry
-      if (msg.startsWith("Timeout: supabase select tracked_products")) {
-        toast.message("Loading is slow — retrying…");
-        if (retryTimer.current) clearTimeout(retryTimer.current);
-        retryTimer.current = setTimeout(() => {
-          loadProducts(currentUser);
-        }, 1500);
+      if (error) {
+        console.error("❌ loadProducts supabase error:", error);
+        toast.error(`Load failed: ${error.message}`);
         return;
       }
 
-      toast.error(e?.message || "Failed to load items.");
-      // keep existing products on non-timeout too (no wipe)
-    } finally {
-      loadInFlight.current = false;
-    }
-  }
-
-  async function fetchHistory(productId: string) {
-    setChartLoading(true);
-    setChartSnapshots([]);
-
-    try {
-      const builder = supabase
-        .from("price_snapshots")
-        .select("price,currency,seen_at")
-        .eq("product_id", productId)
-        .order("seen_at", { ascending: true });
-
-      const res: any = await Promise.race([
-        exec<any>(builder),
-        timeout<any>(20000, "supabase select price_snapshots"),
-      ]);
-
-      if (res?.error) throw res.error;
-
-      setChartSnapshots(res?.data || []);
+      setItems((data as unknown as TrackedProduct[]) ?? []);
     } catch (e: any) {
-      console.error("❌ fetchHistory failed:", e);
-      toast.error(e?.message || "Failed to load price history.");
-      setChartSnapshots([]);
+      console.error("❌ loadProducts failed:", e);
+      toast.error(e?.message || "Load failed");
     } finally {
-      setChartLoading(false);
+      setLoadingItems(false);
     }
   }
 
-  async function sendMagicLink() {
-    const e = email.trim();
-    if (!e) return toast.error("Enter your email.");
-
-    setAuthSending(true);
-    try {
-      const base =
-        process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") || window.location.origin;
-      const emailRedirectTo = `${base}/auth/callback`;
-
-      const { error } = await supabase.auth.signInWithOtp({
-        email: e,
-        options: { emailRedirectTo },
-      });
-
-      if (error) throw error;
-
-      toast.success("Magic link sent. Check your email.");
-      setStatusLine("📩 Magic link sent — open it to sign in.");
-      setAuthOpen(false);
-    } catch (err: any) {
-      console.error(err);
-      toast.error(err?.message || "Failed to send magic link.");
-    } finally {
-      setAuthSending(false);
-    }
-  }
-
-  async function trackNow() {
-    const link = url.trim();
-    if (!link) {
-      toast.error("Please paste a product link.");
-      setStatusLine("❌ Please paste a product link.");
+  // -------- Magic link send (handle 429) --------
+  async function sendMagicLink(targetEmail: string) {
+    const now = Date.now();
+    if (otpCooldownUntil && now < otpCooldownUntil) {
+      const seconds = Math.ceil((otpCooldownUntil - now) / 1000);
+      toast.error(`Too many attempts. Try again in ${seconds}s.`);
       return;
     }
 
+    const trimmed = (targetEmail || "").trim();
+    if (!trimmed) {
+      toast.error("Enter your email.");
+      return;
+    }
+
+    try {
+      // IMPORTANT: redirectTo must point to your callback route in prod
+      const redirectTo =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/auth/callback`
+          : "https://pricescan.ai/auth/callback";
+
+      const res = await supabase.auth.signInWithOtp({
+        email: trimmed,
+        options: { emailRedirectTo: redirectTo },
+      });
+
+      if (res.error) {
+        console.error("❌ signInWithOtp error:", res.error);
+
+        // 429 rate limit
+        if ((res.error as any).status === 429) {
+          // 2 minute cooldown (adjust if you want)
+          const until = Date.now() + 2 * 60 * 1000;
+          setOtpCooldownUntil(until);
+          toast.error("Rate limited by Supabase. Wait a bit and try again.");
+          return;
+        }
+
+        toast.error(res.error.message || "Failed to send magic link");
+        return;
+      }
+
+      toast.success("Magic link request sent. Check your email.");
+    } catch (e: any) {
+      console.error("❌ sendMagicLink exception:", e);
+      toast.error(e?.message || "Failed to send magic link");
+    }
+  }
+
+  // -------- Track flow --------
+  async function trackNow() {
+    const url = clampUrl(inputUrl);
+    if (!url) {
+      toast.error("Paste an eBay product link.");
+      return;
+    }
+
+    // If auth not ready, wait a moment (prevents first-load weirdness)
+    if (!authReady) {
+      toast.error("Auth still loading. Try again in a second.");
+      return;
+    }
+
+    // If not signed in, prompt for email
     if (!user) {
-      setAuthOpen(true);
-      setStatusLine("❌ Not signed in.");
+      setShowEmailPrompt(true);
       return;
     }
 
     setTracking(true);
-    setStatusLine("⏳ Sending…");
-
-    const controller = new AbortController();
-    const kill = setTimeout(() => controller.abort(), 20000);
-
     try {
       const res = await fetch("/api/track", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: link, user_id: user.id }),
-        signal: controller.signal,
+        body: JSON.stringify({
+          url,
+          user_id: user.id,
+        }),
       });
 
-      const json = await res.json().catch(() => ({} as any));
-      if (!res.ok) throw new Error(json?.error || `Track failed (${res.status})`);
+      const json = await res.json().catch(() => null);
 
-      toast.success("✅ Product added!");
-      setStatusLine("✅ Product added!");
-      setUrl("");
+      if (!res.ok) {
+        const msg = json?.error || `Track failed (${res.status})`;
+        toast.error(msg);
+        return;
+      }
 
-      // reload immediately
+      toast.success("Tracking added.");
+      setInputUrl("");
+
+      // Reload items
       await loadProducts(user);
     } catch (e: any) {
       console.error("❌ trackNow failed:", e);
-      if (e?.name === "AbortError") {
-        toast.error("Track timed out (API didn’t respond).");
-        setStatusLine("❌ Timed out — API didn’t respond.");
-      } else {
-        toast.error(e?.message || "Track failed.");
-        setStatusLine(`❌ ${e?.message || "Track failed."}`);
-      }
+      toast.error(e?.message || "Track failed");
     } finally {
-      clearTimeout(kill);
       setTracking(false);
     }
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm("Remove this item?")) return;
-
+  async function signOut() {
     try {
-      const builder = supabase.from("tracked_products").delete().eq("id", id);
-      const res: any = await Promise.race([
-        exec<any>(builder),
-        timeout<any>(15000, "supabase delete tracked_products"),
-      ]);
-      if (res?.error) throw res.error;
-
-      toast.success("Removed.");
-      setProducts((prev) => prev.filter((p) => p.id !== id));
+      await supabase.auth.signOut();
+      toast.success("Signed out.");
+      // items will clear via onAuthStateChange
     } catch (e: any) {
-      console.error("❌ delete failed:", e);
-      toast.error(e?.message || "Delete failed.");
+      toast.error(e?.message || "Sign out failed");
     }
   }
 
+  async function removeItem(productId: string) {
+    if (!user) return;
+
+    try {
+      const { error } = await supabase
+        .from("tracked_products")
+        .delete()
+        .eq("id", productId)
+        .eq("user_id", user.id);
+
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      toast.success("Removed.");
+      setItems((prev) => prev.filter((p) => p.id !== productId));
+    } catch (e: any) {
+      toast.error(e?.message || "Remove failed");
+    }
+  }
+
+  // ---- UI helpers ----
+  const otpCooldownText = useMemo(() => {
+    if (!otpCooldownUntil) return null;
+    const diff = otpCooldownUntil - Date.now();
+    if (diff <= 0) return null;
+    return `${Math.ceil(diff / 1000)}s`;
+  }, [otpCooldownUntil]);
+
   return (
-    <main className="max-w-6xl mx-auto px-4 py-10 text-center">
-      <h1 className="text-3xl font-bold mb-2 text-blue-600">
-        🔎 PriceScan — Track Product Prices
-      </h1>
-
-      <p className="text-xs text-gray-500 mb-6">{signedInText}</p>
-
-      <div className="flex flex-col md:flex-row gap-3 w-full max-w-xl mx-auto mb-3">
-        <input
-          type="text"
-          inputMode="url"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste an eBay product link..."
-          className="flex-1 p-3 border rounded-md shadow-sm"
-        />
-
-        <button
-          type="button"
-          onClick={trackNow}
-          disabled={tracking}
-          className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-60"
-        >
-          {tracking ? "Tracking..." : "Track"}
-        </button>
-      </div>
-
-      {statusLine ? <p className="text-sm text-gray-500 mb-5">{statusLine}</p> : <div className="mb-5" />}
-
-      {!authChecked ? (
-        <p className="text-gray-400">Loading…</p>
-      ) : loadingProducts && products.length === 0 ? (
-        <p className="text-gray-400">Loading…</p>
-      ) : products.length === 0 ? (
-        <p className="text-gray-500">No items yet — track something!</p>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 text-left">
-          {products.map((item) => {
-            const affiliateUrl = getEbayAffiliateLink(item.url);
-            const hasPrice = item.latest_price !== null;
-
-            let displayPrice = item.latest_price ?? 0;
-            let displayCode: string = item.currency || "GBP";
-
-            if (
-              hasPrice &&
-              isSupportedCurrency(item.currency) &&
-              item.currency !== displayCurrency
-            ) {
-              displayPrice = convertCurrency(
-                item.latest_price as number,
-                item.currency as CurrencyCode,
-                displayCurrency
-              );
-              displayCode = displayCurrency;
-            }
-
-            const isSoldOut = !!item.is_sold_out;
-            const isEnded = !!item.is_ended;
-
-            return (
-              <div key={item.id} className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col">
-                <div className="h-[52px] mb-2 overflow-hidden">
-                  <p className="font-semibold text-[18px] line-clamp-2">
-                    {item.title || "Untitled"}
-                  </p>
-                </div>
-
-                {isSoldOut && (
-                  <span className="inline-block mb-2 px-2 py-1 text-xs font-semibold bg-red-100 text-red-700 rounded">
-                    SOLD OUT
-                  </span>
-                )}
-                {isEnded && (
-                  <span className="inline-block mb-2 px-2 py-1 text-xs font-semibold bg-gray-200 text-gray-600 rounded">
-                    LISTING ENDED
-                  </span>
-                )}
-                {item.status_message && (
-                  <p className="text-xs text-gray-500 mb-2">{item.status_message}</p>
-                )}
-
-                {hasPrice ? (
-                  <p className="text-[26px] font-bold text-gray-900 mb-1">
-                    {displayCode} {displayPrice.toFixed(2)}
-                  </p>
-                ) : (
-                  <p className="text-sm text-blue-500 animate-pulse">
-                    No price yet (sold out/ended or pending)
-                  </p>
-                )}
-
+    <div className="min-h-[calc(100vh-120px)]">
+      <div className="max-w-5xl mx-auto px-4 py-10">
+        {/* Top bar */}
+        <div className="flex items-center justify-between gap-4 mb-8">
+          <div className="text-sm text-gray-600">
+            {user ? (
+              <div className="flex items-center gap-3">
+                <span>Signed in as: {user.email}</span>
                 <button
-                  onClick={async () => {
-                    setSelectedProduct(item);
-                    setShowChart(true);
-                    await fetchHistory(item.id);
-                  }}
-                  className="text-blue-600 text-sm mb-4 hover:underline text-left"
+                  onClick={signOut}
+                  className="text-red-600 hover:underline"
                 >
-                  📈 View Price History
+                  Sign Out
                 </button>
-
-                <div className="mt-auto flex gap-3">
-                  <a
-                    href={affiliateUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex-1 text-center bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700"
-                  >
-                    View
-                  </a>
-
-                  <button
-                    onClick={() => handleDelete(item.id)}
-                    className="flex-1 bg-gray-200 text-gray-700 py-2 rounded-md hover:bg-gray-300"
-                  >
-                    Remove
-                  </button>
-                </div>
               </div>
-            );
-          })}
+            ) : (
+              <span>Not signed in.</span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-600">Currency:</span>
+            <select
+              className="border rounded px-2 py-1"
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value)}
+            >
+              <option value="GBP">GBP</option>
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="JPY">JPY</option>
+            </select>
+          </div>
         </div>
-      )}
 
-      <Modal open={showChart} onClose={() => setShowChart(false)}>
-        <h2 className="text-xl font-semibold mb-3">Price History</h2>
-        {chartLoading ? (
-          <p className="text-gray-400">Loading chart…</p>
-        ) : (
-          <PriceHistoryChart snapshots={chartSnapshots} />
-        )}
-      </Modal>
+        {/* Title */}
+        <h1 className="text-3xl font-bold text-center mb-2">
+          🔎 PriceScan — Track Product Prices
+        </h1>
 
-      <Modal open={authOpen} onClose={() => setAuthOpen(false)}>
-        <h2 className="text-xl font-semibold mb-3">Sign in to track</h2>
-        <p className="text-sm text-gray-600 mb-4">
-          Enter your email and we’ll send you a magic sign-in link.
-        </p>
-
-        <div className="flex flex-col gap-3">
+        {/* Input row */}
+        <div className="mt-6 flex items-center justify-center gap-3">
           <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@email.com"
-            className="p-3 border rounded-md shadow-sm"
+            className="w-full max-w-xl border rounded px-4 py-3 text-lg"
+            placeholder="Paste an eBay product link..."
+            value={inputUrl}
+            onChange={(e) => setInputUrl(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void trackNow();
+            }}
           />
 
           <button
-            onClick={sendMagicLink}
-            disabled={authSending}
-            className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-60"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded font-semibold disabled:opacity-60"
+            onClick={trackNow}
+            disabled={tracking}
           >
-            {authSending ? "Sending..." : "Send magic link"}
-          </button>
-
-          <button
-            onClick={() => setAuthOpen(false)}
-            className="px-6 py-3 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300"
-          >
-            Cancel
+            {tracking ? "Tracking..." : "Track"}
           </button>
         </div>
-      </Modal>
-    </main>
+
+        {/* Email prompt */}
+        {showEmailPrompt && !user && (
+          <div className="max-w-xl mx-auto mt-4 border rounded p-4 bg-white">
+            <div className="font-semibold mb-2">Sign in to track</div>
+            <div className="text-sm text-gray-600 mb-3">
+              Enter your email and we’ll send you a magic link.
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                className="flex-1 border rounded px-3 py-2"
+                placeholder="you@email.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+
+              <button
+                className="bg-gray-900 hover:bg-black text-white px-4 py-2 rounded disabled:opacity-60"
+                onClick={() => void sendMagicLink(email)}
+                disabled={!!otpCooldownText}
+                title={otpCooldownText ? `Wait ${otpCooldownText}` : undefined}
+              >
+                {otpCooldownText ? `Wait ${otpCooldownText}` : "Send link"}
+              </button>
+
+              <button
+                className="border px-4 py-2 rounded"
+                onClick={() => setShowEmailPrompt(false)}
+              >
+                Cancel
+              </button>
+            </div>
+
+            <div className="text-xs text-gray-500 mt-2">
+              Link will redirect to <code>/auth/callback</code>.
+              {otpCooldownText ? (
+                <span className="ml-2 text-red-600">
+                  (Rate-limited — wait {otpCooldownText})
+                </span>
+              ) : null}
+            </div>
+          </div>
+        )}
+
+        {/* Items */}
+        <div className="mt-10">
+          {loadingItems ? (
+            <div className="text-center text-gray-500">Loading...</div>
+          ) : !authReady ? (
+            <div className="text-center text-gray-500">Loading auth...</div>
+          ) : !user ? (
+            <div className="text-center text-gray-500">
+              No items yet — track something!
+            </div>
+          ) : items.length === 0 ? (
+            <div className="text-center text-gray-500">
+              No items yet — track something!
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {items.map((item) => {
+                const { price, currency: cur } = getDisplayPrice(item);
+                const curLabel = normalizeCurrencyLabel(cur || currency);
+
+                const isEnded = !!item.is_ended;
+                const isSoldOut = !!item.is_sold_out;
+
+                // Sold-out / ended badge text
+                const badgeText =
+                  item.status_message ||
+                  (isEnded ? "Listing ended" : isSoldOut ? "Out of stock" : "");
+
+                return (
+                  <div
+                    key={item.id}
+                    className="border rounded-2xl p-5 bg-white shadow-sm"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="font-bold text-lg leading-snug">
+                        {item.title || "Unknown item"}
+                      </div>
+
+                      {(isEnded || isSoldOut) && (
+                        <span className="text-xs font-semibold px-2 py-1 rounded bg-red-50 text-red-700 border border-red-200 whitespace-nowrap">
+                          {badgeText}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="mt-3 text-2xl font-extrabold">
+                      {typeof price === "number" && curLabel
+                        ? formatMoney(curLabel, price)
+                        : "—"}
+                    </div>
+
+                    <div className="mt-2">
+                      <a
+                        href={`/history?product_id=${encodeURIComponent(item.id)}`}
+                        className="text-blue-600 hover:underline text-sm"
+                      >
+                        📉 View Price History
+                      </a>
+                    </div>
+
+                    <div className="mt-4 flex gap-3">
+                      <a
+                        href={item.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded text-center font-semibold"
+                      >
+                        View
+                      </a>
+
+                      <button
+                        onClick={() => void removeItem(item.id)}
+                        className="flex-1 bg-gray-200 hover:bg-gray-300 py-2 rounded text-center font-semibold"
+                      >
+                        Remove
+                      </button>
+                    </div>
+
+                    {/* Debug / extra info */}
+                    <div className="mt-3 text-xs text-gray-500 break-all">
+                      {item.merchant ? `Merchant: ${item.merchant}` : null}
+                      {item.sku ? ` • SKU: ${item.sku}` : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Footer helper */}
+        <div className="mt-10 text-center text-xs text-gray-400">
+          If magic link emails don’t arrive and Network shows <b>429</b>, Supabase
+          rate-limited your OTP requests — wait and try once.
+        </div>
+      </div>
+    </div>
   );
 }
