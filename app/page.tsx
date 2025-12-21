@@ -30,12 +30,10 @@ type ProductRow = {
   is_ended?: boolean | null;
   status_message?: string | null;
 
-  // list view only needs latest snapshot
   latest_price: number | null;
   currency: string;
   seen_at: string | null;
 
-  // chart will be loaded on demand
   price_snapshots?: Snapshot[];
 };
 
@@ -100,30 +98,39 @@ export default function HomePage() {
       window.removeEventListener("pricescan-currency-update", handler as EventListener);
   }, []);
 
-  // Init auth once + subscribe changes
+  // ✅ FIX: init auth and load products using the local session user (not state)
   useEffect(() => {
     const init = async () => {
+      setLoadingProducts(true);
+
       try {
-        const { data } = await Promise.race([
+        const { data, error } = await Promise.race([
           supabase.auth.getSession(),
           timeout<any>(15000, "supabase.auth.getSession"),
         ]);
+        if (error) throw error;
+
         const u = data?.session?.user ?? null;
         setUser(u);
-      } catch {
-        setUser(null);
-      } finally {
         setAuthChecked(true);
-      }
 
-      await loadProducts();
+        // ✅ CRITICAL: load immediately with `u`, not `user` state
+        await loadProducts(u);
+      } catch (e: any) {
+        console.error("init auth/load failed:", e);
+        setUser(null);
+        setAuthChecked(true);
+        setProducts([]);
+      } finally {
+        setLoadingProducts(false);
+      }
     };
 
     const sub = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const next = session?.user ?? null;
-      setUser(next);
+      const u = session?.user ?? null;
+      setUser(u);
       setAuthChecked(true);
-      await loadProducts();
+      await loadProducts(u);
     });
 
     init();
@@ -135,19 +142,18 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function loadProducts() {
+  // ✅ IMPORTANT: loadProducts takes a user parameter
+  async function loadProducts(currentUser: any) {
     if (loadInFlight.current) return;
     loadInFlight.current = true;
 
-    setLoadingProducts(true);
-
     try {
-      if (!user) {
+      if (!currentUser) {
         setProducts([]);
         return;
       }
 
-      // ✅ SPEED: only fetch latest snapshot for list view (limit 1)
+      // Fast list query: only latest snapshot for grid view
       const builder = supabase
         .from("tracked_products")
         .select(
@@ -168,14 +174,14 @@ export default function HomePage() {
           )
         `
         )
-        .eq("user_id", user.id)
+        .eq("user_id", currentUser.id)
         .order("created_at", { ascending: false })
         .order("seen_at", { foreignTable: "price_snapshots", ascending: false })
         .limit(1, { foreignTable: "price_snapshots" });
 
       const res: any = await Promise.race([
         exec<any>(builder),
-        timeout<any>(25000, "supabase select tracked_products"), // slightly longer
+        timeout<any>(25000, "supabase select tracked_products"),
       ]);
 
       if (res?.error) throw res.error;
@@ -196,9 +202,11 @@ export default function HomePage() {
           merchant: item.merchant ?? null,
           locale: item.locale ?? null,
           sku: item.sku ?? null,
+
           is_sold_out: item.is_sold_out ?? null,
           is_ended: item.is_ended ?? null,
           status_message: item.status_message ?? null,
+
           latest_price: last?.price ?? null,
           currency: last?.currency ?? "GBP",
           seen_at: last?.seen_at ?? null,
@@ -210,20 +218,19 @@ export default function HomePage() {
       const msg = String(e?.message || "");
       console.error("❌ loadProducts failed:", e);
 
-      // ✅ CRITICAL FIX: do NOT wipe products on timeout
+      // Don’t wipe products on timeout: keep last known list and retry
       if (msg.startsWith("Timeout: supabase select tracked_products")) {
         toast.message("Loading is slow — retrying…");
         if (retryTimer.current) clearTimeout(retryTimer.current);
         retryTimer.current = setTimeout(() => {
-          loadProducts();
+          loadProducts(currentUser);
         }, 1500);
         return;
       }
 
       toast.error(e?.message || "Failed to load items.");
-      // keep old products, don’t clear
+      // keep existing products on non-timeout too (no wipe)
     } finally {
-      setLoadingProducts(false);
       loadInFlight.current = false;
     }
   }
@@ -319,7 +326,8 @@ export default function HomePage() {
       setStatusLine("✅ Product added!");
       setUrl("");
 
-      await loadProducts();
+      // reload immediately
+      await loadProducts(user);
     } catch (e: any) {
       console.error("❌ trackNow failed:", e);
       if (e?.name === "AbortError") {
@@ -384,7 +392,9 @@ export default function HomePage() {
 
       {statusLine ? <p className="text-sm text-gray-500 mb-5">{statusLine}</p> : <div className="mb-5" />}
 
-      {loadingProducts && products.length === 0 ? (
+      {!authChecked ? (
+        <p className="text-gray-400">Loading…</p>
+      ) : loadingProducts && products.length === 0 ? (
         <p className="text-gray-400">Loading…</p>
       ) : products.length === 0 ? (
         <p className="text-gray-500">No items yet — track something!</p>
