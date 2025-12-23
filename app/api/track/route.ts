@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseServer";
 import { getEbayAccessToken } from "@/lib/ebay-auth";
+import { cookies } from "next/headers";
+import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -139,9 +141,16 @@ export async function POST(req: NextRequest) {
   }
 
   const input = body.id || body.url;
-  const userId = body.user_id;
+  let userId = body.user_id as string | undefined;
 
-  if (!userId) return jsonError("Missing user_id", 400);
+  // ✅ If user_id not provided, read Supabase session from cookies (so your HomePage {url} works)
+  if (!userId) {
+    const supabase = createRouteHandlerClient({ cookies });
+    const { data } = await supabase.auth.getUser();
+    userId = data?.user?.id;
+  }
+
+  if (!userId) return jsonError("Not signed in", 401);
 
   const id = extractId(input || "");
   if (!id) return jsonError("Invalid eBay URL or ID", 400);
@@ -229,25 +238,26 @@ export async function POST(req: NextRequest) {
     productId = (inserted as any).data.id;
   }
 
-  // 4) Insert price snapshot only if item is NOT sold-out/ended
-  if (!item.isSoldOut && !item.isEnded) {
-    const snapRes = await withTimeout(
-      exec(
-        supabaseAdmin.from("price_snapshots").insert({
-          product_id: productId,
-          price: item.price,
-          currency: item.currency,
-        })
-      ),
-      10_000,
-      "supabase insert price_snapshots"
-    );
+  // ✅ 4) ALWAYS insert a snapshot so “Updated” refreshes even for sold-out/ended items
+  // If sold out / ended, store price as null (assumes price column allows null)
+  const snapshotPrice = item.isSoldOut || item.isEnded ? null : item.price;
 
-    const snapError = (snapRes as any).error;
-    if (snapError) {
-      console.error("❌ Supabase price_snapshots insert error:", snapError);
-      // don't fail whole request
-    }
+  const snapRes = await withTimeout(
+    exec(
+      supabaseAdmin.from("price_snapshots").insert({
+        product_id: productId,
+        price: snapshotPrice,
+        currency: item.currency,
+      })
+    ),
+    10_000,
+    "supabase insert price_snapshots"
+  );
+
+  const snapError = (snapRes as any).error;
+  if (snapError) {
+    console.error("❌ Supabase price_snapshots insert error:", snapError);
+    // don't fail whole request
   }
 
   return NextResponse.json({
