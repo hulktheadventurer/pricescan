@@ -3,7 +3,11 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import { CurrencyCode, isSupportedCurrency } from "@/lib/currency";
+import {
+  CurrencyCode,
+  convertCurrency,
+  isSupportedCurrency,
+} from "@/lib/currency";
 
 type TrackedProduct = {
   id: string;
@@ -11,13 +15,6 @@ type TrackedProduct = {
   url?: string | null;
   merchant?: string | null;
   sku?: string | null;
-
-  // optional legacy fields (ignore if not present)
-  price?: number | null;
-  current_price?: number | null;
-  last_price?: number | null;
-  latest_price?: number | null;
-
   currency?: string | null;
   price_currency?: string | null;
 };
@@ -28,7 +25,7 @@ type SnapshotRow = {
   currency?: string | null;
 };
 
-function fmt(amount: number, currency: string) {
+function fmt(amount: number, currency: CurrencyCode) {
   try {
     return new Intl.NumberFormat(undefined, {
       style: "currency",
@@ -44,13 +41,16 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
   const supabase = createClientComponentClient();
 
   const [busy, setBusy] = useState(false);
+
+  // Selected display currency (from Header broadcast)
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
+  // Latest snapshot data
   const [latestPrice, setLatestPrice] = useState<number | null>(null);
-  const [latestCurrency, setLatestCurrency] = useState<CurrencyCode | null>(null);
   const [latestSeenAt, setLatestSeenAt] = useState<string | null>(null);
+  const [latestCurrency, setLatestCurrency] = useState<CurrencyCode>("GBP");
 
-  // Listen to header currency changes (broadcast)
+  // Listen to header currency changes
   useEffect(() => {
     const handler = (e: any) => {
       const code = e?.detail;
@@ -61,13 +61,14 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
       window.removeEventListener("pricescan-currency-update", handler as any);
   }, []);
 
-  // Fetch latest snapshot price (THIS is the fix)
+  // Fetch latest snapshot
   useEffect(() => {
     let cancelled = false;
 
     async function loadLatest() {
       if (!product?.id) return;
 
+      // try with currency
       const { data, error } = await supabase
         .from("price_snapshots")
         .select("price, seen_at, currency")
@@ -79,8 +80,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
       if (cancelled) return;
 
       if (error) {
-        // If your snapshots table doesn't have "currency", this might error on select.
-        // Fallback: retry without currency.
+        // fallback without currency
         const retry = await supabase
           .from("price_snapshots")
           .select("price, seen_at")
@@ -92,17 +92,20 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         if (!cancelled) {
           setLatestPrice((retry.data as any)?.price ?? null);
           setLatestSeenAt((retry.data as any)?.seen_at ?? null);
-          setLatestCurrency(null);
+          setLatestCurrency("GBP"); // default
         }
         return;
       }
 
       const row = data as SnapshotRow | null;
+      const rawCurrency = (row?.currency || "GBP").toUpperCase();
+      const snapCurrency = isSupportedCurrency(rawCurrency)
+        ? (rawCurrency as CurrencyCode)
+        : "GBP";
+
       setLatestPrice(row?.price ?? null);
       setLatestSeenAt(row?.seen_at ?? null);
-
-      const c = (row?.currency || "").toUpperCase();
-      setLatestCurrency(isSupportedCurrency(c) ? (c as CurrencyCode) : null);
+      setLatestCurrency(snapCurrency);
     }
 
     loadLatest();
@@ -111,30 +114,19 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     };
   }, [product?.id, supabase]);
 
-  const baseCurrency = useMemo<CurrencyCode>(() => {
-    const c = (product.currency || product.price_currency || "GBP").toUpperCase();
-    return isSupportedCurrency(c) ? (c as CurrencyCode) : "GBP";
-  }, [product]);
-
-  // Prefer latest snapshot price; fallback to any legacy field if present
-  const price = useMemo(() => {
-    return (
-      latestPrice ??
-      product.price ??
-      product.current_price ??
-      product.last_price ??
-      product.latest_price ??
-      null
-    );
-  }, [latestPrice, product]);
-
-  const priceCurrency = useMemo<CurrencyCode>(() => {
-    // If snapshot has a currency, use it; otherwise use product/base
-    return latestCurrency ?? baseCurrency;
-  }, [latestCurrency, baseCurrency]);
-
   const merchant = product.merchant || "ebay";
   const sku = product.sku || "";
+
+  // Convert snapshot price into selected display currency (GBP pivot in your util)
+  const convertedPrice = useMemo(() => {
+    if (latestPrice == null) return null;
+    return convertCurrency(latestPrice, latestCurrency, displayCurrency);
+  }, [latestPrice, latestCurrency, displayCurrency]);
+
+  const priceLabel = useMemo(() => {
+    if (convertedPrice == null) return null;
+    return fmt(convertedPrice, displayCurrency);
+  }, [convertedPrice, displayCurrency]);
 
   async function handleRemove() {
     if (!product?.id) return;
@@ -160,11 +152,6 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     if (product.url) window.open(product.url, "_blank", "noopener,noreferrer");
   }
 
-  // NOTE: this displays in chosen header currency code (no FX conversion).
-  // Same behaviour as your previous UI vibe, just not doing real conversion.
-  const priceLabel =
-    price == null ? null : fmt(price, displayCurrency || priceCurrency);
-
   return (
     <div className="bg-white border rounded-2xl p-5 shadow-sm">
       <div className="font-semibold text-lg leading-snug mb-3">
@@ -172,7 +159,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
       </div>
 
       <div className="text-2xl font-bold mb-1">
-        {price == null ? (
+        {latestPrice == null ? (
           <span className="text-gray-400">No price yet</span>
         ) : (
           <span>{priceLabel}</span>
