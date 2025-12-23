@@ -8,6 +8,7 @@ import {
   convertCurrency,
   isSupportedCurrency,
 } from "@/lib/currency";
+import { buildAliExpressAffiliateUrl } from "@/lib/affiliates/admitad";
 
 type TrackedProduct = {
   id: string;
@@ -119,7 +120,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     };
   }, [product?.id, supabase]);
 
-  const merchant = product.merchant || "ebay";
+  const merchant = (product.merchant || "ebay").toLowerCase();
   const sku = product.sku || "";
 
   // Convert snapshot price into selected display currency
@@ -136,7 +137,8 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
   // ✅ Badge logic from tracked_products
   const badge = useMemo(() => {
     if (product.is_ended) return { text: "Ended", cls: "bg-gray-900 text-white" };
-    if (product.is_sold_out) return { text: "Sold out", cls: "bg-red-600 text-white" };
+    if (product.is_sold_out)
+      return { text: "Sold out", cls: "bg-red-600 text-white" };
     return null;
   }, [product.is_ended, product.is_sold_out]);
 
@@ -161,7 +163,14 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
   }
 
   function handleView() {
-    if (product.url) window.open(product.url, "_blank", "noopener,noreferrer");
+    if (!product.url) return;
+
+    const target =
+      merchant === "aliexpress"
+        ? buildAliExpressAffiliateUrl(product.url)
+        : product.url;
+
+    window.open(target, "_blank", "noopener,noreferrer");
   }
 
   return (
