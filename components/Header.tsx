@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { toast } from "sonner";
 
 import {
   SUPPORTED_CURRENCIES,
@@ -16,11 +17,18 @@ export default function Header() {
   const [user, setUser] = useState<any>(null);
   const [currency, setCurrency] = useState<CurrencyCode>("GBP");
 
-  // Load user + currency from DB
+  // sign-in UI state
+  const [email, setEmail] = useState("");
+  const [sending, setSending] = useState(false);
+
   useEffect(() => {
+    let mounted = true;
+
     const load = async () => {
       const { data: userData } = await supabase.auth.getUser();
       const u = userData?.user || null;
+      if (!mounted) return;
+
       setUser(u);
 
       if (u) {
@@ -37,6 +45,17 @@ export default function Header() {
     };
 
     load();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -45,17 +64,38 @@ export default function Header() {
 
     if (!user) return;
 
-    // Save to DB
-    await supabase
-      .from("user_profile")
-      .upsert({ user_id: user.id, currency: code });
+    await supabase.from("user_profile").upsert({ user_id: user.id, currency: code });
 
-    // Broadcast to the rest of the app
     window.dispatchEvent(
       new CustomEvent("pricescan-currency-update", {
         detail: code,
       })
     );
+  }
+
+  async function sendMagicLink() {
+    const e = email.trim().toLowerCase();
+    if (!e) return toast.error("Enter your email first.");
+
+    setSending(true);
+    try {
+      // IMPORTANT: force redirect back to whatever domain you're currently on
+      const redirectTo = `${window.location.origin}/auth/callback`;
+
+      const { error } = await supabase.auth.signInWithOtp({
+        email: e,
+        options: { emailRedirectTo: redirectTo },
+      });
+
+      if (error) throw error;
+
+      toast.success("Magic link sent — check your email.");
+      setEmail("");
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to send magic link.");
+    } finally {
+      setSending(false);
+    }
   }
 
   async function signOut() {
@@ -66,23 +106,17 @@ export default function Header() {
   return (
     <header className="w-full border-b bg-white">
       <div className="max-w-6xl mx-auto flex justify-between items-center py-4 px-4">
-
         {/* Logo */}
-        <Link
-          href="/"
-          className="text-xl font-semibold flex items-center space-x-2"
-        >
+        <Link href="/" className="text-xl font-semibold flex items-center space-x-2">
           <span role="img">📈</span>
           <span>PriceScan</span>
         </Link>
 
         {/* Right side */}
         <div className="flex items-center space-x-4">
-
           {/* Currency Selector */}
           <div className="flex items-center space-x-2">
             <span className="text-gray-600 text-sm">Currency:</span>
-
             <select
               className="border p-1 rounded-md text-sm"
               value={currency}
@@ -96,17 +130,30 @@ export default function Header() {
             </select>
           </div>
 
-          {/* User */}
-          {user && (
+          {/* Auth */}
+          {user ? (
             <>
               <span className="text-gray-600 text-sm">{user.email}</span>
-              <button
-                onClick={signOut}
-                className="text-red-600 text-sm hover:underline"
-              >
+              <button onClick={signOut} className="text-red-600 text-sm hover:underline">
                 Sign Out
               </button>
             </>
+          ) : (
+            <div className="flex items-center gap-2">
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="email for magic link"
+                className="border rounded px-2 py-1 text-sm w-52"
+              />
+              <button
+                onClick={sendMagicLink}
+                disabled={sending}
+                className="bg-blue-600 text-white text-sm px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-60"
+              >
+                {sending ? "Sending…" : "Sign in"}
+              </button>
+            </div>
           )}
         </div>
       </div>
