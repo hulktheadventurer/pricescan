@@ -12,6 +12,7 @@ type TrackedProduct = {
   merchant?: string | null;
   sku?: string | null;
 
+  // optional legacy fields (ignore if not present)
   price?: number | null;
   current_price?: number | null;
   last_price?: number | null;
@@ -19,6 +20,12 @@ type TrackedProduct = {
 
   currency?: string | null;
   price_currency?: string | null;
+};
+
+type SnapshotRow = {
+  price?: number | null;
+  seen_at?: string | null;
+  currency?: string | null;
 };
 
 function fmt(amount: number, currency: string) {
@@ -29,7 +36,6 @@ function fmt(amount: number, currency: string) {
       maximumFractionDigits: 2,
     }).format(amount);
   } catch {
-    // fallback if currency code is weird
     return `${amount.toFixed(2)} ${currency}`;
   }
 }
@@ -39,6 +45,10 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
 
   const [busy, setBusy] = useState(false);
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
+
+  const [latestPrice, setLatestPrice] = useState<number | null>(null);
+  const [latestCurrency, setLatestCurrency] = useState<CurrencyCode | null>(null);
+  const [latestSeenAt, setLatestSeenAt] = useState<string | null>(null);
 
   // Listen to header currency changes (broadcast)
   useEffect(() => {
@@ -51,20 +61,77 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
       window.removeEventListener("pricescan-currency-update", handler as any);
   }, []);
 
+  // Fetch latest snapshot price (THIS is the fix)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLatest() {
+      if (!product?.id) return;
+
+      const { data, error } = await supabase
+        .from("price_snapshots")
+        .select("price, seen_at, currency")
+        .eq("product_id", product.id)
+        .order("seen_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (cancelled) return;
+
+      if (error) {
+        // If your snapshots table doesn't have "currency", this might error on select.
+        // Fallback: retry without currency.
+        const retry = await supabase
+          .from("price_snapshots")
+          .select("price, seen_at")
+          .eq("product_id", product.id)
+          .order("seen_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (!cancelled) {
+          setLatestPrice((retry.data as any)?.price ?? null);
+          setLatestSeenAt((retry.data as any)?.seen_at ?? null);
+          setLatestCurrency(null);
+        }
+        return;
+      }
+
+      const row = data as SnapshotRow | null;
+      setLatestPrice(row?.price ?? null);
+      setLatestSeenAt(row?.seen_at ?? null);
+
+      const c = (row?.currency || "").toUpperCase();
+      setLatestCurrency(isSupportedCurrency(c) ? (c as CurrencyCode) : null);
+    }
+
+    loadLatest();
+    return () => {
+      cancelled = true;
+    };
+  }, [product?.id, supabase]);
+
+  const baseCurrency = useMemo<CurrencyCode>(() => {
+    const c = (product.currency || product.price_currency || "GBP").toUpperCase();
+    return isSupportedCurrency(c) ? (c as CurrencyCode) : "GBP";
+  }, [product]);
+
+  // Prefer latest snapshot price; fallback to any legacy field if present
   const price = useMemo(() => {
     return (
+      latestPrice ??
       product.price ??
       product.current_price ??
       product.last_price ??
       product.latest_price ??
       null
     );
-  }, [product]);
+  }, [latestPrice, product]);
 
-  const baseCurrency = useMemo<CurrencyCode>(() => {
-    const c = (product.currency || product.price_currency || "GBP").toUpperCase();
-    return isSupportedCurrency(c) ? (c as CurrencyCode) : "GBP";
-  }, [product]);
+  const priceCurrency = useMemo<CurrencyCode>(() => {
+    // If snapshot has a currency, use it; otherwise use product/base
+    return latestCurrency ?? baseCurrency;
+  }, [latestCurrency, baseCurrency]);
 
   const merchant = product.merchant || "ebay";
   const sku = product.sku || "";
@@ -93,10 +160,10 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     if (product.url) window.open(product.url, "_blank", "noopener,noreferrer");
   }
 
-  // NOTE: we are NOT doing FX conversion here. We just display using the chosen currency code.
-  // If you want real conversion later, we can wire it to your existing currency logic.
+  // NOTE: this displays in chosen header currency code (no FX conversion).
+  // Same behaviour as your previous UI vibe, just not doing real conversion.
   const priceLabel =
-    price == null ? null : fmt(price, displayCurrency || baseCurrency);
+    price == null ? null : fmt(price, displayCurrency || priceCurrency);
 
   return (
     <div className="bg-white border rounded-2xl p-5 shadow-sm">
@@ -104,13 +171,19 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         {product.title || "Untitled"}
       </div>
 
-      <div className="text-2xl font-bold mb-3">
+      <div className="text-2xl font-bold mb-1">
         {price == null ? (
           <span className="text-gray-400">No price yet</span>
         ) : (
           <span>{priceLabel}</span>
         )}
       </div>
+
+      {latestSeenAt && (
+        <div className="text-xs text-gray-400 mb-3">
+          Updated: {new Date(latestSeenAt).toLocaleString("en-GB")}
+        </div>
+      )}
 
       <div className="text-sm text-gray-500 mb-4">
         Merchant: {merchant}
