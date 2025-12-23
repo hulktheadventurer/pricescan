@@ -5,6 +5,10 @@ import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import ProductCard from "@/components/ProductCard";
 import { toast } from "sonner";
 
+function isAliExpressUrl(u: string) {
+  return /aliexpress\./i.test(u);
+}
+
 export default function HomePage() {
   const supabase = createClientComponentClient();
 
@@ -13,7 +17,6 @@ export default function HomePage() {
   const [user, setUser] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
 
-  // get current session
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setUser(data.session?.user ?? null);
@@ -25,41 +28,30 @@ export default function HomePage() {
       setUser(session?.user ?? null);
     });
 
-    return () => {
-      subscription.unsubscribe();
-    };
+    return () => subscription.unsubscribe();
   }, [supabase]);
 
-  async function loadProducts(u: any) {
-    if (!u) {
+  useEffect(() => {
+    if (!user) {
       setProducts([]);
       return;
     }
 
-    const { data, error } = await supabase
-      .from("tracked_products")
-      .select("*")
-      .order("created_at", { ascending: false });
+    async function load() {
+      const { data, error } = await supabase
+        .from("tracked_products")
+        .select("*")
+        .order("created_at", { ascending: false });
 
-    if (!error) setProducts(data ?? []);
-  }
+      if (!error) setProducts(data ?? []);
+    }
 
-  // load tracked products
-  useEffect(() => {
-    loadProducts(user);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
-
-  // refresh hook (for remove button)
-  useEffect(() => {
-    const handler = () => loadProducts(user);
-    window.addEventListener("pricescan-products-refresh", handler);
-    return () => window.removeEventListener("pricescan-products-refresh", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+    load();
+  }, [user, supabase]);
 
   async function handleTrack() {
-    if (!url.trim()) {
+    const input = url.trim();
+    if (!input) {
       toast.error("Paste a product URL first.");
       return;
     }
@@ -72,22 +64,27 @@ export default function HomePage() {
     setLoading(true);
 
     try {
-      const res = await fetch("/api/track", {
+      const endpoint = isAliExpressUrl(input) ? "/api/track-aliexpress" : "/api/track";
+
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url: input }),
       });
 
       const json = await res.json();
 
-      if (!res.ok) {
-        throw new Error(json.error || "Failed to track product");
-      }
+      if (!res.ok) throw new Error(json.error || "Failed to track product");
 
       setUrl("");
       toast.success("Product added.");
 
-      await loadProducts(user);
+      const { data } = await supabase
+        .from("tracked_products")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      setProducts(data ?? []);
     } catch (err: any) {
       toast.error(err.message || "Something went wrong.");
     } finally {
@@ -97,17 +94,18 @@ export default function HomePage() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-10">
+      <div className="mb-8" />
+
       <h1 className="text-3xl font-bold mb-6">
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      {/* Track box */}
       <div className="flex gap-3 mb-10">
         <input
           type="text"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste an eBay product link…"
+          placeholder="Paste an eBay or AliExpress link…"
           className="flex-1 border rounded px-4 py-2"
         />
         <button
@@ -119,7 +117,6 @@ export default function HomePage() {
         </button>
       </div>
 
-      {/* Products */}
       {products.length === 0 ? (
         <p className="text-gray-500 text-center">
           No items yet — track something!
