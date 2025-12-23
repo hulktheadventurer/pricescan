@@ -16,7 +16,8 @@ export default function HistoryPage() {
   const params = useSearchParams();
   const router = useRouter();
 
-  const productId = params.get("product_id");
+  // ✅ Null-safe for TS (some Next typings mark params as nullable)
+  const productId = params?.get("product_id") ?? null;
 
   const [loading, setLoading] = useState(true);
   const [title, setTitle] = useState<string>("");
@@ -36,7 +37,6 @@ export default function HistoryPage() {
         return;
       }
 
-      // Optional: require auth (keeps history private)
       const { data: sessionData } = await supabase.auth.getSession();
       if (!sessionData.session?.user) {
         setError("Not signed in.");
