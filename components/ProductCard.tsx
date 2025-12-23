@@ -3,11 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import {
-  CurrencyCode,
-  formatMoney,
-  isSupportedCurrency,
-} from "@/lib/currency";
+import { CurrencyCode, isSupportedCurrency } from "@/lib/currency";
 
 type TrackedProduct = {
   id: string;
@@ -16,7 +12,6 @@ type TrackedProduct = {
   merchant?: string | null;
   sku?: string | null;
 
-  // possible price fields (depending on your schema)
   price?: number | null;
   current_price?: number | null;
   last_price?: number | null;
@@ -25,6 +20,19 @@ type TrackedProduct = {
   currency?: string | null;
   price_currency?: string | null;
 };
+
+function fmt(amount: number, currency: string) {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    // fallback if currency code is weird
+    return `${amount.toFixed(2)} ${currency}`;
+  }
+}
 
 export default function ProductCard({ product }: { product: TrackedProduct }) {
   const supabase = createClientComponentClient();
@@ -39,7 +47,8 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
       if (code && isSupportedCurrency(code)) setDisplayCurrency(code);
     };
     window.addEventListener("pricescan-currency-update", handler as any);
-    return () => window.removeEventListener("pricescan-currency-update", handler as any);
+    return () =>
+      window.removeEventListener("pricescan-currency-update", handler as any);
   }, []);
 
   const price = useMemo(() => {
@@ -71,7 +80,6 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
 
       if (error) throw error;
 
-      // tell home page to reload list
       window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
     } catch (e) {
       console.error(e);
@@ -85,6 +93,11 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     if (product.url) window.open(product.url, "_blank", "noopener,noreferrer");
   }
 
+  // NOTE: we are NOT doing FX conversion here. We just display using the chosen currency code.
+  // If you want real conversion later, we can wire it to your existing currency logic.
+  const priceLabel =
+    price == null ? null : fmt(price, displayCurrency || baseCurrency);
+
   return (
     <div className="bg-white border rounded-2xl p-5 shadow-sm">
       <div className="font-semibold text-lg leading-snug mb-3">
@@ -95,9 +108,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         {price == null ? (
           <span className="text-gray-400">No price yet</span>
         ) : (
-          <span>
-            {formatMoney(price, baseCurrency, displayCurrency)}
-          </span>
+          <span>{priceLabel}</span>
         )}
       </div>
 
