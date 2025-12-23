@@ -18,16 +18,14 @@ type TrackedProduct = {
   currency?: string | null;
   price_currency?: string | null;
 
-  // optional (in case you store it on tracked_products)
-  availability?: string | null;
-  in_stock?: boolean | null;
+  // optional if you ever store it on tracked_products
   is_sold_out?: boolean | null;
   sold_out?: boolean | null;
+  in_stock?: boolean | null;
+  availability?: string | null;
   stock?: number | null;
   quantity?: number | null;
 };
-
-type SnapshotRowAny = Record<string, any>;
 
 function fmt(amount: number, currency: CurrencyCode) {
   try {
@@ -41,49 +39,65 @@ function fmt(amount: number, currency: CurrencyCode) {
   }
 }
 
-function looksSoldOutFromValue(v: any): boolean {
-  if (v == null) return false;
-
-  if (typeof v === "boolean") {
-    // if field is in_stock => false means sold out
-    return v === false;
-  }
-
-  if (typeof v === "number") {
-    // 0 stock/qty means sold out
-    return v <= 0;
-  }
-
-  if (typeof v === "string") {
-    const s = v.toLowerCase();
-    return (
-      s.includes("sold out") ||
-      s.includes("out of stock") ||
-      s.includes("out_of_stock") ||
-      s.includes("oos") ||
-      s.includes("unavailable") ||
-      s.includes("ended") ||
-      s.includes("no longer available")
-    );
-  }
-
-  return false;
+function includesSoldOutText(s: string) {
+  const t = s.toLowerCase();
+  return (
+    t.includes("sold out") ||
+    t.includes("out of stock") ||
+    t.includes("out_of_stock") ||
+    t.includes("unavailable") ||
+    t.includes("no longer available") ||
+    t.includes("listing ended") ||
+    t.includes("ended") ||
+    t.includes("not available") ||
+    t.includes("oos")
+  );
 }
 
-function detectSoldOut(row: any): boolean {
-  // direct booleans first
-  if (row?.is_sold_out === true || row?.sold_out === true) return true;
+// ✅ Generic sold-out detection that works even if your column names are unknown
+function detectSoldOutAny(row: any): boolean {
+  if (!row) return false;
 
-  // in_stock false
-  if (row?.in_stock === false) return true;
+  // common explicit flags
+  if (row.is_sold_out === true || row.sold_out === true) return true;
+  if (row.in_stock === false) return true;
 
-  // quantity/stock 0
-  if (typeof row?.stock === "number" && row.stock <= 0) return true;
-  if (typeof row?.quantity === "number" && row.quantity <= 0) return true;
+  // common numeric stock fields
+  if (typeof row.stock === "number" && row.stock <= 0) return true;
+  if (typeof row.quantity === "number" && row.quantity <= 0) return true;
 
-  // availability/status strings
-  if (looksSoldOutFromValue(row?.availability)) return true;
-  if (looksSoldOutFromValue(row?.status)) return true;
+  // common string fields
+  if (typeof row.availability === "string" && includesSoldOutText(row.availability)) return true;
+  if (typeof row.status === "string" && includesSoldOutText(row.status)) return true;
+
+  // fallback: scan ALL fields
+  for (const [key, val] of Object.entries(row)) {
+    if (val == null) continue;
+
+    // if any boolean field looks like a stock flag and is false
+    if (typeof val === "boolean") {
+      const k = key.toLowerCase();
+      if (
+        (k.includes("stock") || k.includes("available") || k.includes("availability") || k.includes("in_stock")) &&
+        val === false
+      ) {
+        return true;
+      }
+    }
+
+    // if any number field looks like quantity/stock and is 0
+    if (typeof val === "number") {
+      const k = key.toLowerCase();
+      if ((k.includes("qty") || k.includes("quantity") || k.includes("stock")) && val <= 0) {
+        return true;
+      }
+    }
+
+    // if any string contains sold-out keywords
+    if (typeof val === "string" && includesSoldOutText(val)) {
+      return true;
+    }
+  }
 
   return false;
 }
@@ -93,15 +107,12 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
 
   const [busy, setBusy] = useState(false);
 
-  // Selected display currency (from Header broadcast)
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
-  // Latest snapshot data
   const [latestPrice, setLatestPrice] = useState<number | null>(null);
   const [latestSeenAt, setLatestSeenAt] = useState<string | null>(null);
   const [latestCurrency, setLatestCurrency] = useState<CurrencyCode>("GBP");
 
-  // Sold out flag (from snapshot or tracked_products fallback)
   const [soldOut, setSoldOut] = useState<boolean>(false);
 
   // Listen to header currency changes
@@ -115,73 +126,52 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
       window.removeEventListener("pricescan-currency-update", handler as any);
   }, []);
 
-  // Fetch latest snapshot (price + optional availability fields if present)
+  // Fetch latest snapshot using select("*") so we never miss column names
   useEffect(() => {
     let cancelled = false;
 
     async function loadLatest() {
       if (!product?.id) return;
 
-      // baseline soldOut from product fields (if you store it there)
+      // fallback from tracked_products if you store state there
       const fallbackSold =
-        detectSoldOut(product) ||
-        product?.is_sold_out === true ||
-        product?.sold_out === true;
+        product.is_sold_out === true ||
+        product.sold_out === true ||
+        product.in_stock === false ||
+        (typeof product.stock === "number" && product.stock <= 0) ||
+        (typeof product.quantity === "number" && product.quantity <= 0) ||
+        (typeof product.availability === "string" && includesSoldOutText(product.availability));
+
       setSoldOut(fallbackSold);
 
-      // Try selecting extra fields; if they don't exist, retry smaller selects
-      const tries: string[] = [
-        // most likely / common
-        "price, seen_at, currency, availability, in_stock, is_sold_out, sold_out, stock, quantity, status",
-        // medium
-        "price, seen_at, currency, availability, in_stock, stock, quantity, status",
-        // minimal + availability
-        "price, seen_at, currency, availability",
-        // minimal
-        "price, seen_at, currency",
-        // minimal (no currency)
-        "price, seen_at",
-      ];
+      const { data, error } = await supabase
+        .from("price_snapshots")
+        .select("*")
+        .eq("product_id", product.id)
+        .order("seen_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-      for (const sel of tries) {
-        const { data, error } = await supabase
-          .from("price_snapshots")
-          .select(sel)
-          .eq("product_id", product.id)
-          .order("seen_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
+      if (cancelled) return;
 
-        if (cancelled) return;
-
-        if (error) {
-          // try next select variant
-          continue;
-        }
-
-        const row = (data || null) as SnapshotRowAny | null;
-
-        // price + time
-        setLatestPrice((row as any)?.price ?? null);
-        setLatestSeenAt((row as any)?.seen_at ?? null);
-
-        // currency (optional)
-        const rawCurrency = ((row as any)?.currency || "GBP").toUpperCase();
-        const snapCurrency = isSupportedCurrency(rawCurrency)
-          ? (rawCurrency as CurrencyCode)
-          : "GBP";
-        setLatestCurrency(snapCurrency);
-
-        // sold out detection from snapshot (overrides fallback if true)
-        const snapSold = detectSoldOut(row);
-        setSoldOut(snapSold || fallbackSold);
-
-        // success, stop trying
+      if (error) {
+        console.warn("snapshot fetch error:", error.message);
         return;
       }
 
-      // If all snapshot selects failed, keep fallback from product
-      return;
+      const row: any = data || null;
+
+      setLatestPrice(typeof row?.price === "number" ? row.price : null);
+      setLatestSeenAt(typeof row?.seen_at === "string" ? row.seen_at : null);
+
+      const rawCurrency = String(row?.currency || "GBP").toUpperCase();
+      const snapCurrency = isSupportedCurrency(rawCurrency)
+        ? (rawCurrency as CurrencyCode)
+        : "GBP";
+      setLatestCurrency(snapCurrency);
+
+      const snapSold = detectSoldOutAny(row);
+      setSoldOut(snapSold || fallbackSold);
     }
 
     loadLatest();
@@ -193,7 +183,6 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
   const merchant = product.merchant || "ebay";
   const sku = product.sku || "";
 
-  // Convert snapshot price into selected display currency (GBP pivot in your util)
   const convertedPrice = useMemo(() => {
     if (latestPrice == null) return null;
     return convertCurrency(latestPrice, latestCurrency, displayCurrency);
@@ -230,7 +219,6 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
 
   return (
     <div className="relative bg-white border rounded-2xl p-5 shadow-sm">
-      {/* SOLD OUT badge */}
       {soldOut && (
         <div className="absolute top-3 right-3 bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full">
           SOLD OUT
