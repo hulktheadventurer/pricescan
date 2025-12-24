@@ -15,12 +15,24 @@ export default function Header() {
   const supabase = createClientComponentClient();
 
   const [user, setUser] = useState<any>(null);
-
   const [currency, setCurrency] = useState<CurrencyCode>("GBP");
 
   // sign-in UI state
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
+
+  function broadcastCurrency(code: CurrencyCode) {
+    window.dispatchEvent(
+      new CustomEvent("pricescan-currency-update", { detail: code })
+    );
+  }
+
+  async function persistCurrency(userId: string, nextCurrency: CurrencyCode) {
+    await supabase.from("user_profile").upsert({
+      user_id: userId,
+      currency: nextCurrency,
+    });
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -32,8 +44,8 @@ export default function Header() {
 
       setUser(u);
 
-      // Load saved currency preference (ignore ship_country now)
-      if (u) {
+      // If signed in, load saved currency pref
+      if (u?.id) {
         const { data } = await supabase
           .from("user_profile")
           .select("currency")
@@ -42,14 +54,16 @@ export default function Header() {
 
         if (!mounted) return;
 
-        if (data?.currency && isSupportedCurrency(data.currency)) {
-          const c = data.currency as CurrencyCode;
-          setCurrency(c);
-          broadcastCurrency(c);
+        const cur = String(data?.currency || "GBP").toUpperCase();
+        if (isSupportedCurrency(cur)) {
+          setCurrency(cur as CurrencyCode);
+          broadcastCurrency(cur as CurrencyCode);
         } else {
+          setCurrency("GBP");
           broadcastCurrency("GBP");
         }
       } else {
+        // Not signed in: still broadcast default so cards are consistent
         broadcastCurrency("GBP");
       }
     };
@@ -58,8 +72,26 @@ export default function Header() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const u = session?.user ?? null;
+      setUser(u);
+
+      // On login/logout, reload preference (or default)
+      if (u?.id) {
+        const { data } = await supabase
+          .from("user_profile")
+          .select("currency")
+          .eq("user_id", u.id)
+          .maybeSingle();
+
+        const cur = String(data?.currency || "GBP").toUpperCase();
+        const next = isSupportedCurrency(cur) ? (cur as CurrencyCode) : "GBP";
+        setCurrency(next);
+        broadcastCurrency(next);
+      } else {
+        setCurrency("GBP");
+        broadcastCurrency("GBP");
+      }
     });
 
     return () => {
@@ -69,24 +101,19 @@ export default function Header() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function persistProfile(nextCurrency: CurrencyCode) {
-    if (!user) return;
-    await supabase.from("user_profile").upsert({
-      user_id: user.id,
-      currency: nextCurrency,
-    });
-  }
-
-  function broadcastCurrency(code: CurrencyCode) {
-    window.dispatchEvent(
-      new CustomEvent("pricescan-currency-update", { detail: code })
-    );
-  }
-
   async function handleCurrencyChange(code: CurrencyCode) {
     setCurrency(code);
     broadcastCurrency(code);
-    await persistProfile(code);
+
+    // Only persist if signed in
+    if (user?.id) {
+      try {
+        await persistCurrency(user.id, code);
+      } catch (e) {
+        console.error(e);
+        toast.error("Failed to save currency preference.");
+      }
+    }
   }
 
   async function sendMagicLink() {
@@ -121,13 +148,14 @@ export default function Header() {
   return (
     <header className="w-full border-b bg-white">
       <div className="max-w-6xl mx-auto flex justify-between items-center py-4 px-4">
-        {/* Logo */}
-        <Link href="/" className="text-xl font-semibold flex items-center space-x-2">
+        <Link
+          href="/"
+          className="text-xl font-semibold flex items-center space-x-2"
+        >
           <span role="img">📈</span>
           <span>PriceScan</span>
         </Link>
 
-        {/* Right side */}
         <div className="flex items-center space-x-4">
           {/* Currency Selector */}
           <div className="flex items-center space-x-2">
@@ -135,13 +163,17 @@ export default function Header() {
             <select
               className="border p-1 rounded-md text-sm"
               value={currency}
-              onChange={(e) => handleCurrencyChange(e.target.value as CurrencyCode)}
+              onChange={(e) =>
+                handleCurrencyChange(e.target.value as CurrencyCode)
+              }
             >
-              {SUPPORTED_CURRENCIES.slice().sort().map((code) => (
-                <option key={code} value={code}>
-                  {code}
-                </option>
-              ))}
+              {SUPPORTED_CURRENCIES.slice()
+                .sort()
+                .map((code) => (
+                  <option key={code} value={code}>
+                    {code}
+                  </option>
+                ))}
             </select>
           </div>
 
@@ -149,7 +181,10 @@ export default function Header() {
           {user ? (
             <>
               <span className="text-gray-600 text-sm">{user.email}</span>
-              <button onClick={signOut} className="text-red-600 text-sm hover:underline">
+              <button
+                onClick={signOut}
+                className="text-red-600 text-sm hover:underline"
+              >
                 Sign Out
               </button>
             </>

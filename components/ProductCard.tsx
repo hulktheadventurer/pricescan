@@ -33,16 +33,27 @@ type SnapshotRow = {
 
 const AMAZON_TAG = "theforbiddens-21";
 
+// ✅ Admitad AliExpress WW deeplink base (your sample)
+const ADMITAD_ALI_BASE = "https://rzekl.com/g/1e8d1144940e8bbbb3bf16525dc3e8/";
+
+// --- URL builders ---
 function buildAmazonSearchUrl(title: string | null | undefined) {
   const q = (title || "").trim();
   if (!q) return `https://www.amazon.co.uk/?tag=${AMAZON_TAG}`;
   return `https://www.amazon.co.uk/s?k=${encodeURIComponent(q)}&tag=${AMAZON_TAG}`;
 }
 
-function buildAliExpressSearchUrl(title: string | null | undefined) {
+function buildAliExpressSearchTarget(title: string | null | undefined) {
   const q = (title || "").trim();
   if (!q) return "https://www.aliexpress.com/";
+  // AliExpress search URL
   return `https://www.aliexpress.com/wholesale?SearchText=${encodeURIComponent(q)}`;
+}
+
+function wrapWithAdmitadDeeplink(targetUrl: string) {
+  // Admitad deep link generator style: ?ulp=<encoded target>
+  // (Matches your example)
+  return `${ADMITAD_ALI_BASE}?ulp=${encodeURIComponent(targetUrl)}`;
 }
 
 function fmt(amount: number, currency: CurrencyCode) {
@@ -75,10 +86,11 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     [product?.title]
   );
 
-  const aliUrl = useMemo(
-    () => buildAliExpressSearchUrl(product?.title),
-    [product?.title]
-  );
+  // ✅ AliExpress is now ALWAYS your Admitad deeplink (search page)
+  const aliUrl = useMemo(() => {
+    const target = buildAliExpressSearchTarget(product?.title);
+    return wrapWithAdmitadDeeplink(target);
+  }, [product?.title]);
 
   // Listen to header currency changes
   useEffect(() => {
@@ -165,7 +177,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
   }, [product.is_ended, product.is_sold_out]);
 
   async function handleRemove() {
-    if (!product?.id) return;
+    if (!product?.id || busy) return;
     setBusy(true);
     try {
       const { error } = await supabase
@@ -251,7 +263,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         <button
           onClick={handleAmazon}
           className="flex-1 bg-white border py-2 rounded hover:bg-gray-50"
-          title="Search this item on Amazon"
+          title="Search this item on Amazon (affiliate)"
         >
           Amazon
         </button>
@@ -259,7 +271,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         <button
           onClick={handleAli}
           className="flex-1 bg-white border py-2 rounded hover:bg-gray-50"
-          title="Search this item on AliExpress"
+          title="Search this item on AliExpress (Admitad affiliate)"
         >
           AliExpress
         </button>
