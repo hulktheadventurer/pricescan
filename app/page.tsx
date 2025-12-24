@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import ProductCard from "@/components/ProductCard";
 import { toast } from "sonner";
@@ -8,6 +8,8 @@ import { toast } from "sonner";
 function isAliExpressUrl(u: string) {
   return /aliexpress\./i.test(u);
 }
+
+const PENDING_TRACK_KEY = "pricescan_pending_track_url";
 
 export default function HomePage() {
   const supabase = createClientComponentClient();
@@ -22,6 +24,54 @@ export default function HomePage() {
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
 
+  // 🔁 Load products
+  const loadProducts = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("tracked_products")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (!error) setProducts(data ?? []);
+  }, [supabase]);
+
+  // ✅ Core track function (assumes user is logged in)
+  const trackUrl = useCallback(
+    async (input: string) => {
+      const trimmed = (input || "").trim();
+      if (!trimmed) return;
+
+      if (isAliExpressUrl(trimmed)) {
+        toast.error(
+          "AliExpress tracking is paused. Use the AliExpress button on cards for affiliate search."
+        );
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const res = await fetch("/api/track", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: trimmed }),
+        });
+
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || "Failed to track product");
+
+        setUrl("");
+        toast.success("Product added.");
+
+        // refresh list immediately
+        await loadProducts();
+      } catch (err: any) {
+        toast.error(err.message || "Something went wrong.");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loadProducts]
+  );
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setUser(data.session?.user ?? null);
@@ -29,13 +79,31 @@ export default function HomePage() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-      if (session?.user) setShowSignIn(false); // close modal after sign-in
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const u = session?.user ?? null;
+      setUser(u);
+
+      // ✅ Close modal after sign-in
+      if (u) setShowSignIn(false);
+
+      // ✅ If user clicked Track before signing in, auto-run track after login
+      if (u) {
+        const pending =
+          (typeof window !== "undefined" &&
+            window.localStorage.getItem(PENDING_TRACK_KEY)) ||
+          "";
+
+        if (pending) {
+          window.localStorage.removeItem(PENDING_TRACK_KEY);
+          // keep the input showing what they tried to track
+          setUrl(pending);
+          await trackUrl(pending);
+        }
+      }
     });
 
     return () => subscription.unsubscribe();
-  }, [supabase]);
+  }, [supabase, trackUrl]);
 
   useEffect(() => {
     if (!user) {
@@ -43,28 +111,20 @@ export default function HomePage() {
       return;
     }
 
-    async function load() {
-      const { data, error } = await supabase
-        .from("tracked_products")
-        .select("*")
-        .order("created_at", { ascending: false });
+    loadProducts();
 
-      if (!error) setProducts(data ?? []);
-    }
-
-    load();
-
-    const refresh = () => load();
+    const refresh = () => loadProducts();
     window.addEventListener("pricescan-products-refresh", refresh as any);
     return () =>
       window.removeEventListener("pricescan-products-refresh", refresh as any);
-  }, [user, supabase]);
+  }, [user, loadProducts]);
 
   // ✅ allow header "Sign in" button to open modal too
   useEffect(() => {
     const open = () => setShowSignIn(true);
     window.addEventListener("pricescan-open-signin", open as any);
-    return () => window.removeEventListener("pricescan-open-signin", open as any);
+    return () =>
+      window.removeEventListener("pricescan-open-signin", open as any);
   }, []);
 
   async function sendMagicLink() {
@@ -101,39 +161,15 @@ export default function HomePage() {
 
     // ✅ OLD FLOW: click Track -> show email modal if not logged in
     if (!user) {
+      // store the URL so it auto-tracks right after login
+      try {
+        window.localStorage.setItem(PENDING_TRACK_KEY, input);
+      } catch {}
       setShowSignIn(true);
       return;
     }
 
-    if (isAliExpressUrl(input)) {
-      toast.error(
-        "AliExpress tracking is paused. Use the AliExpress button on cards for affiliate search."
-      );
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      const res = await fetch("/api/track", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: input }),
-      });
-
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Failed to track product");
-
-      setUrl("");
-      toast.success("Product added.");
-
-      // refresh list immediately
-      window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
-    } catch (err: any) {
-      toast.error(err.message || "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
+    await trackUrl(input);
   }
 
   return (
@@ -146,7 +182,9 @@ export default function HomePage() {
             onClick={() => setShowSignIn(false)}
           />
           <div className="relative bg-white w-[92%] max-w-md rounded-2xl shadow-xl border p-6">
-            <div className="text-xl font-semibold mb-2">Sign in to PriceScan</div>
+            <div className="text-xl font-semibold mb-2">
+              Sign in to PriceScan
+            </div>
             <div className="text-sm text-gray-600 mb-4">
               Enter your email and we’ll send you a magic link.
             </div>
@@ -208,7 +246,7 @@ export default function HomePage() {
 
       {!user ? (
         <p className="text-gray-500 text-center">
-          Paste an eBay link and click <b>Track</b> — we’ll ask you to sign in.
+          Paste an eBay link and click <b>Track</b>.
         </p>
       ) : products.length === 0 ? (
         <p className="text-gray-500 text-center">No items yet — track something!</p>
