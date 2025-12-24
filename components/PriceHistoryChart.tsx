@@ -40,11 +40,9 @@ export default function PriceHistoryChart({
 
   // Sort ASC (oldest → newest)
   const sorted = [...snapshots].sort(
-    (a, b) =>
-      new Date(a.seen_at).getTime() - new Date(b.seen_at).getTime()
+    (a, b) => new Date(a.seen_at).getTime() - new Date(b.seen_at).getTime()
   );
 
-  // Labels always exist
   const labels = sorted.map((s) =>
     new Date(s.seen_at).toLocaleDateString("en-GB", {
       day: "numeric",
@@ -52,8 +50,6 @@ export default function PriceHistoryChart({
     })
   );
 
-  // IMPORTANT:
-  // Chart.js supports `null` values → creates a visual gap
   const prices = sorted.map((s) =>
     typeof s.price === "number" ? s.price : null
   );
@@ -79,10 +75,8 @@ export default function PriceHistoryChart({
             {
               label: "Price",
               data: prices,
-              borderColor: "#2563eb",
-              backgroundColor: "rgba(37,99,235,0.15)",
               pointRadius: 3,
-              spanGaps: false, // ⛔ do NOT connect gaps
+              spanGaps: false,
               tension: 0.3,
             },
           ],
@@ -90,21 +84,18 @@ export default function PriceHistoryChart({
         options={{
           responsive: true,
           maintainAspectRatio: false,
+          parsing: false,
           plugins: {
             legend: { display: false },
             tooltip: {
               callbacks: {
                 label: (ctx) =>
-                  ctx.raw == null
-                    ? "No price"
-                    : `Price: ${ctx.raw}`,
+                  ctx.raw == null ? "No price" : `Price: ${ctx.raw}`,
               },
             },
           },
           scales: {
-            y: {
-              beginAtZero: false,
-            },
+            y: { beginAtZero: false },
           },
         }}
       />
