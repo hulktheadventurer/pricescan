@@ -5,10 +5,6 @@ import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import ProductCard from "@/components/ProductCard";
 import { toast } from "sonner";
 
-function isAliExpressUrl(u: string) {
-  return /aliexpress\./i.test(u);
-}
-
 export default function HomePage() {
   const supabase = createClientComponentClient();
 
@@ -64,9 +60,7 @@ export default function HomePage() {
     setLoading(true);
 
     try {
-      const endpoint = isAliExpressUrl(input) ? "/api/track-aliexpress" : "/api/track";
-
-      const res = await fetch(endpoint, {
+      const res = await fetch("/api/track", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: input }),
@@ -105,7 +99,7 @@ export default function HomePage() {
           type="text"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste an eBay or AliExpress link…"
+          placeholder="Paste an eBay link…"
           className="flex-1 border rounded px-4 py-2"
         />
         <button
