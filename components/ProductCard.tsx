@@ -16,13 +16,10 @@ type TrackedProduct = {
   merchant?: string | null;
   sku?: string | null;
 
-  // ✅ from tracked_products
+  // from tracked_products
   is_sold_out?: boolean | null;
   is_ended?: boolean | null;
   status_message?: string | null;
-
-  currency?: string | null;
-  price_currency?: string | null;
 };
 
 type SnapshotRow = {
@@ -31,29 +28,32 @@ type SnapshotRow = {
   currency?: string | null;
 };
 
-const AMAZON_TAG = "theforbiddens-21";
+const AMAZON_TAG =
+  process.env.NEXT_PUBLIC_AMAZON_TAG || "theforbiddens-21";
 
-// ✅ Admitad AliExpress WW deeplink base (your sample)
-const ADMITAD_ALI_BASE = "https://rzekl.com/g/1e8d1144940e8bbbb3bf16525dc3e8/";
+// Example prefix you set:
+// https://rzekl.com/g/1e8d1144940e8bbbb3bf16525dc3e8/
+const ALI_DEEPLINK_PREFIX =
+  process.env.NEXT_PUBLIC_ALI_DEEPLINK_PREFIX || "";
 
-// --- URL builders ---
 function buildAmazonSearchUrl(title: string | null | undefined) {
   const q = (title || "").trim();
   if (!q) return `https://www.amazon.co.uk/?tag=${AMAZON_TAG}`;
   return `https://www.amazon.co.uk/s?k=${encodeURIComponent(q)}&tag=${AMAZON_TAG}`;
 }
 
-function buildAliExpressSearchTarget(title: string | null | undefined) {
+function buildAliExpressSearchUrl(title: string | null | undefined) {
   const q = (title || "").trim();
   if (!q) return "https://www.aliexpress.com/";
-  // AliExpress search URL
   return `https://www.aliexpress.com/wholesale?SearchText=${encodeURIComponent(q)}`;
 }
 
-function wrapWithAdmitadDeeplink(targetUrl: string) {
-  // Admitad deep link generator style: ?ulp=<encoded target>
-  // (Matches your example)
-  return `${ADMITAD_ALI_BASE}?ulp=${encodeURIComponent(targetUrl)}`;
+function wrapAliWithDeeplink(targetUrl: string) {
+  if (!ALI_DEEPLINK_PREFIX) return targetUrl;
+
+  // Admitad deeplink format is: <prefix>?ulp=<encoded_target>
+  const joiner = ALI_DEEPLINK_PREFIX.includes("?") ? "&" : "?";
+  return `${ALI_DEEPLINK_PREFIX}${joiner}ulp=${encodeURIComponent(targetUrl)}`;
 }
 
 function fmt(amount: number, currency: CurrencyCode) {
@@ -86,11 +86,15 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     [product?.title]
   );
 
-  // ✅ AliExpress is now ALWAYS your Admitad deeplink (search page)
-  const aliUrl = useMemo(() => {
-    const target = buildAliExpressSearchTarget(product?.title);
-    return wrapWithAdmitadDeeplink(target);
-  }, [product?.title]);
+  const aliSearchUrl = useMemo(
+    () => buildAliExpressSearchUrl(product?.title),
+    [product?.title]
+  );
+
+  const aliAffiliateUrl = useMemo(
+    () => wrapAliWithDeeplink(aliSearchUrl),
+    [aliSearchUrl]
+  );
 
   // Listen to header currency changes
   useEffect(() => {
@@ -121,7 +125,6 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
       if (cancelled) return;
 
       if (error) {
-        // fallback without currency
         const retry = await supabase
           .from("price_snapshots")
           .select("price, seen_at")
@@ -155,9 +158,6 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     };
   }, [product?.id, supabase]);
 
-  const merchant = product.merchant || "ebay";
-  const sku = product.sku || "";
-
   // Convert snapshot price into selected display currency
   const convertedPrice = useMemo(() => {
     if (latestPrice == null) return null;
@@ -169,7 +169,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     return fmt(convertedPrice, displayCurrency);
   }, [convertedPrice, displayCurrency]);
 
-  // ✅ Badge logic from tracked_products
+  // Badge logic from tracked_products
   const badge = useMemo(() => {
     if (product.is_ended) return { text: "Ended", cls: "bg-gray-900 text-white" };
     if (product.is_sold_out) return { text: "Sold out", cls: "bg-red-600 text-white" };
@@ -177,7 +177,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
   }, [product.is_ended, product.is_sold_out]);
 
   async function handleRemove() {
-    if (!product?.id || busy) return;
+    if (!product?.id) return;
     setBusy(true);
     try {
       const { error } = await supabase
@@ -205,12 +205,11 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
   }
 
   function handleAli() {
-    window.open(aliUrl, "_blank", "noopener,noreferrer");
+    window.open(aliAffiliateUrl, "_blank", "noopener,noreferrer");
   }
 
   return (
     <div className="bg-white border rounded-2xl p-5 shadow-sm relative">
-      {/* ✅ Badge */}
       {badge && (
         <div
           className={`absolute top-4 right-4 text-xs font-semibold px-2 py-1 rounded-full ${badge.cls}`}
@@ -239,8 +238,8 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
       )}
 
       <div className="text-sm text-gray-500 mb-4">
-        Merchant: {merchant}
-        {sku ? ` • SKU: ${sku}` : ""}
+        Merchant: {product.merchant || "ebay"}
+        {product.sku ? ` • SKU: ${product.sku}` : ""}
       </div>
 
       <div className="flex items-center gap-3 mb-4">
@@ -263,7 +262,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         <button
           onClick={handleAmazon}
           className="flex-1 bg-white border py-2 rounded hover:bg-gray-50"
-          title="Search this item on Amazon (affiliate)"
+          title="Search this item on Amazon"
         >
           Amazon
         </button>
@@ -271,7 +270,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         <button
           onClick={handleAli}
           className="flex-1 bg-white border py-2 rounded hover:bg-gray-50"
-          title="Search this item on AliExpress (Admitad affiliate)"
+          title={ALI_DEEPLINK_PREFIX ? "Search on AliExpress (affiliate)" : "Search on AliExpress"}
         >
           AliExpress
         </button>

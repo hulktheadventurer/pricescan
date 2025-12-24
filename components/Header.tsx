@@ -27,13 +27,6 @@ export default function Header() {
     );
   }
 
-  async function persistCurrency(userId: string, nextCurrency: CurrencyCode) {
-    await supabase.from("user_profile").upsert({
-      user_id: userId,
-      currency: nextCurrency,
-    });
-  }
-
   useEffect(() => {
     let mounted = true;
 
@@ -44,8 +37,8 @@ export default function Header() {
 
       setUser(u);
 
-      // If signed in, load saved currency pref
-      if (u?.id) {
+      // Load currency preference if user exists
+      if (u) {
         const { data } = await supabase
           .from("user_profile")
           .select("currency")
@@ -54,17 +47,15 @@ export default function Header() {
 
         if (!mounted) return;
 
-        const cur = String(data?.currency || "GBP").toUpperCase();
-        if (isSupportedCurrency(cur)) {
-          setCurrency(cur as CurrencyCode);
-          broadcastCurrency(cur as CurrencyCode);
+        if (data?.currency && isSupportedCurrency(data.currency)) {
+          const c = data.currency as CurrencyCode;
+          setCurrency(c);
+          broadcastCurrency(c);
         } else {
-          setCurrency("GBP");
-          broadcastCurrency("GBP");
+          broadcastCurrency(currency);
         }
       } else {
-        // Not signed in: still broadcast default so cards are consistent
-        broadcastCurrency("GBP");
+        broadcastCurrency(currency);
       }
     };
 
@@ -72,25 +63,28 @@ export default function Header() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const u = session?.user ?? null;
-      setUser(u);
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
 
-      // On login/logout, reload preference (or default)
-      if (u?.id) {
-        const { data } = await supabase
+      // If user logs in, try to load their currency
+      if (nextUser?.id) {
+        supabase
           .from("user_profile")
           .select("currency")
-          .eq("user_id", u.id)
-          .maybeSingle();
-
-        const cur = String(data?.currency || "GBP").toUpperCase();
-        const next = isSupportedCurrency(cur) ? (cur as CurrencyCode) : "GBP";
-        setCurrency(next);
-        broadcastCurrency(next);
+          .eq("user_id", nextUser.id)
+          .maybeSingle()
+          .then(({ data }) => {
+            if (data?.currency && isSupportedCurrency(data.currency)) {
+              const c = data.currency as CurrencyCode;
+              setCurrency(c);
+              broadcastCurrency(c);
+            } else {
+              broadcastCurrency(currency);
+            }
+          });
       } else {
-        setCurrency("GBP");
-        broadcastCurrency("GBP");
+        broadcastCurrency(currency);
       }
     });
 
@@ -101,19 +95,18 @@ export default function Header() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function persistCurrency(nextCurrency: CurrencyCode) {
+    if (!user) return;
+    await supabase.from("user_profile").upsert({
+      user_id: user.id,
+      currency: nextCurrency,
+    });
+  }
+
   async function handleCurrencyChange(code: CurrencyCode) {
     setCurrency(code);
     broadcastCurrency(code);
-
-    // Only persist if signed in
-    if (user?.id) {
-      try {
-        await persistCurrency(user.id, code);
-      } catch (e) {
-        console.error(e);
-        toast.error("Failed to save currency preference.");
-      }
-    }
+    await persistCurrency(code);
   }
 
   async function sendMagicLink() {

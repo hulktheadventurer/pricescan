@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import ProductCard from "@/components/ProductCard";
 import { toast } from "sonner";
@@ -17,7 +17,21 @@ export default function HomePage() {
   const [user, setUser] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
 
-  // Session
+  // ✅ Single source of truth for refreshing list
+  const loadProducts = useCallback(async () => {
+    if (!user) {
+      setProducts([]);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("tracked_products")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (!error) setProducts(data ?? []);
+  }, [supabase, user]);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setUser(data.session?.user ?? null);
@@ -32,55 +46,26 @@ export default function HomePage() {
     return () => subscription.unsubscribe();
   }, [supabase]);
 
-  // Load tracked products
-  const loadProducts = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("tracked_products")
-      .select("*")
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error(error);
-      toast.error("Failed to load tracked products.");
-      return;
-    }
-
-    setProducts(data ?? []);
-  }, [supabase]);
-
   useEffect(() => {
-    if (!user) {
-      setProducts([]);
-      return;
-    }
-
     loadProducts();
 
     const refresh = () => loadProducts();
     window.addEventListener("pricescan-products-refresh", refresh as any);
     return () =>
       window.removeEventListener("pricescan-products-refresh", refresh as any);
-  }, [user, loadProducts]);
+  }, [loadProducts]);
 
   async function handleTrack() {
-    if (loading) return;
-
     const input = url.trim();
-    if (!input) {
-      toast.error("Paste a product URL first.");
-      return;
-    }
+    if (!input) return toast.error("Paste a product URL first.");
 
-    if (!user) {
-      toast.error("Please sign in to track products.");
-      return;
-    }
+    if (!user) return toast.error("Please sign in to track products.");
 
+    // ✅ AliExpress tracking paused (keep outbound button only)
     if (isAliExpressUrl(input)) {
-      toast.error(
+      return toast.error(
         "AliExpress tracking is paused. Use the AliExpress button on cards for affiliate search."
       );
-      return;
     }
 
     setLoading(true);
@@ -92,14 +77,17 @@ export default function HomePage() {
         body: JSON.stringify({ url: input }),
       });
 
-      const json = await res.json().catch(() => ({}));
+      const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Failed to track product");
 
       setUrl("");
       toast.success("Product added.");
+
+      // ✅ IMPORTANT: tiny delay so the new row is visible before select()
+      await new Promise((r) => setTimeout(r, 300));
       await loadProducts();
     } catch (err: any) {
-      toast.error(err?.message || "Something went wrong.");
+      toast.error(err.message || "Something went wrong.");
     } finally {
       setLoading(false);
     }
@@ -134,9 +122,7 @@ export default function HomePage() {
       </div>
 
       {products.length === 0 ? (
-        <p className="text-gray-500 text-center">
-          No items yet — track something!
-        </p>
+        <p className="text-gray-500 text-center">No items yet — track something!</p>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {products.map((p) => (
