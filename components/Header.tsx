@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import { toast } from "sonner";
 
 import {
   SUPPORTED_CURRENCIES,
@@ -16,10 +15,6 @@ export default function Header() {
 
   const [user, setUser] = useState<any>(null);
   const [currency, setCurrency] = useState<CurrencyCode>("GBP");
-
-  // sign-in UI state
-  const [email, setEmail] = useState("");
-  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -83,33 +78,13 @@ export default function Header() {
     await persistCurrency(code);
   }
 
-  async function sendMagicLink() {
-    const e = email.trim().toLowerCase();
-    if (!e) return toast.error("Enter your email to sign in.");
-
-    setSending(true);
-    try {
-      const redirectTo = `${window.location.origin}/auth/callback`;
-
-      const { error } = await supabase.auth.signInWithOtp({
-        email: e,
-        options: { emailRedirectTo: redirectTo },
-      });
-
-      if (error) throw error;
-
-      toast.success("Magic link sent — check your email.");
-      setEmail("");
-    } catch (err: any) {
-      toast.error(err?.message || "Failed to send magic link.");
-    } finally {
-      setSending(false);
-    }
-  }
-
   async function signOut() {
     await supabase.auth.signOut();
     window.location.href = "/";
+  }
+
+  function triggerSignInModal() {
+    window.dispatchEvent(new CustomEvent("pricescan-open-signin"));
   }
 
   return (
@@ -146,23 +121,12 @@ export default function Header() {
               </button>
             </>
           ) : (
-            <div className="flex items-center gap-2">
-              <input
-                id="pricescan-signin-email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Enter email to sign in"
-                className="border rounded px-2 py-1 text-sm w-60"
-                autoComplete="email"
-              />
-              <button
-                onClick={sendMagicLink}
-                disabled={sending}
-                className="bg-blue-600 text-white text-sm px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-60"
-              >
-                {sending ? "Sending…" : "Sign in"}
-              </button>
-            </div>
+            <button
+              onClick={triggerSignInModal}
+              className="bg-blue-600 text-white text-sm px-3 py-1 rounded hover:bg-blue-700"
+            >
+              Sign in
+            </button>
           )}
         </div>
       </div>

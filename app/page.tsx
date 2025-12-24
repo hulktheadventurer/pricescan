@@ -17,6 +17,11 @@ export default function HomePage() {
   const [user, setUser] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
 
+  // ✅ Sign-in modal state (old flow)
+  const [showSignIn, setShowSignIn] = useState(false);
+  const [email, setEmail] = useState("");
+  const [sending, setSending] = useState(false);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setUser(data.session?.user ?? null);
@@ -26,6 +31,7 @@ export default function HomePage() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
+      if (session?.user) setShowSignIn(false); // close modal after sign-in
     });
 
     return () => subscription.unsubscribe();
@@ -54,20 +60,36 @@ export default function HomePage() {
       window.removeEventListener("pricescan-products-refresh", refresh as any);
   }, [user, supabase]);
 
-  function forceSignInFlow() {
-    toast.error("Please sign in first — enter your email (top right) and click Sign in.");
+  // ✅ allow header "Sign in" button to open modal too
+  useEffect(() => {
+    const open = () => setShowSignIn(true);
+    window.addEventListener("pricescan-open-signin", open as any);
+    return () => window.removeEventListener("pricescan-open-signin", open as any);
+  }, []);
 
-    // bring the email box into view and focus it
-    setTimeout(() => {
-      const el = document.getElementById(
-        "pricescan-signin-email"
-      ) as HTMLInputElement | null;
+  async function sendMagicLink() {
+    const e = email.trim().toLowerCase();
+    if (!e) return toast.error("Enter your email.");
 
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        el.focus();
-      }
-    }, 50);
+    setSending(true);
+    try {
+      const redirectTo = `${window.location.origin}/auth/callback`;
+
+      const { error } = await supabase.auth.signInWithOtp({
+        email: e,
+        options: { emailRedirectTo: redirectTo },
+      });
+
+      if (error) throw error;
+
+      toast.success("Magic link sent — check your email.");
+      setEmail("");
+      // keep modal open so user understands what happened
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to send magic link.");
+    } finally {
+      setSending(false);
+    }
   }
 
   async function handleTrack() {
@@ -77,9 +99,9 @@ export default function HomePage() {
       return;
     }
 
-    // ✅ the exact flow you want: user hits Track → we force sign-in
+    // ✅ OLD FLOW: click Track -> show email modal if not logged in
     if (!user) {
-      forceSignInFlow();
+      setShowSignIn(true);
       return;
     }
 
@@ -116,9 +138,56 @@ export default function HomePage() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-10">
+      {/* ✅ SIGN-IN MODAL (OLD FLOW) */}
+      {showSignIn && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setShowSignIn(false)}
+          />
+          <div className="relative bg-white w-[92%] max-w-md rounded-2xl shadow-xl border p-6">
+            <div className="text-xl font-semibold mb-2">Sign in to PriceScan</div>
+            <div className="text-sm text-gray-600 mb-4">
+              Enter your email and we’ll send you a magic link.
+            </div>
+
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="your@email.com"
+              className="w-full border rounded px-3 py-2 mb-3"
+              autoFocus
+            />
+
+            <div className="flex gap-3">
+              <button
+                onClick={sendMagicLink}
+                disabled={sending}
+                className="flex-1 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-60"
+              >
+                {sending ? "Sending…" : "Send magic link"}
+              </button>
+              <button
+                onClick={() => setShowSignIn(false)}
+                className="flex-1 bg-gray-200 px-4 py-2 rounded hover:bg-gray-300"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="text-xs text-gray-500 mt-3">
+              After clicking the link in your email, you’ll be signed in here.
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mb-8" />
 
-      <h1 className="text-3xl font-bold mb-6">🔎 PriceScan — Track Product Prices</h1>
+      <h1 className="text-3xl font-bold mb-6">
+        🔎 PriceScan — Track Product Prices
+      </h1>
 
       <div className="flex gap-3 mb-10">
         <input
@@ -139,7 +208,7 @@ export default function HomePage() {
 
       {!user ? (
         <p className="text-gray-500 text-center">
-          Sign in (top right) to start tracking products.
+          Paste an eBay link and click <b>Track</b> — we’ll ask you to sign in.
         </p>
       ) : products.length === 0 ? (
         <p className="text-gray-500 text-center">No items yet — track something!</p>
