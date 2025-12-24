@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 
 import PriceHistoryChart from "@/components/PriceHistoryChart";
+import { convertCurrency, isSupportedCurrency, CurrencyCode } from "@/lib/currency";
 
 type Snapshot = {
   id?: string;
@@ -30,16 +31,44 @@ export default function HistoryClient() {
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState<string>("");
   const [product, setProduct] = useState<TrackedProduct | null>(null);
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
 
-  // Load session (for display only)
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
+
+  // listen to header currency changes
+  useEffect(() => {
+    const handler = (e: any) => {
+      const code = String(e?.detail || "").toUpperCase();
+      if (isSupportedCurrency(code)) setDisplayCurrency(code as CurrencyCode);
+    };
+    window.addEventListener("pricescan-currency-update", handler as any);
+    return () => window.removeEventListener("pricescan-currency-update", handler as any);
+  }, []);
+
+  // Load session + profile currency (initial)
   useEffect(() => {
     let cancelled = false;
 
     async function init() {
+      setLoading(true);
+
       const { data: u } = await supabase.auth.getUser();
       if (cancelled) return;
+
       setUserEmail(u?.user?.email || "");
+
+      if (u?.user?.id) {
+        const { data: prof } = await supabase
+          .from("user_profile")
+          .select("currency")
+          .eq("user_id", u.user.id)
+          .maybeSingle();
+
+        const cur = String(prof?.currency || "GBP").toUpperCase();
+        if (isSupportedCurrency(cur)) setDisplayCurrency(cur as CurrencyCode);
+      }
+
+      setLoading(false);
     }
 
     init();
@@ -48,15 +77,12 @@ export default function HistoryClient() {
     };
   }, [supabase]);
 
-  // Load product + snapshots (NO ship_country filtering)
+  // Load product + snapshots
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
-      if (!productId) {
-        setLoading(false);
-        return;
-      }
+      if (!productId) return;
 
       setLoading(true);
 
@@ -95,6 +121,16 @@ export default function HistoryClient() {
     return snapshots[snapshots.length - 1];
   }, [hasSnapshots, snapshots]);
 
+  const convertedSnapshots = useMemo(() => {
+    return snapshots.map((s) => {
+      const rawCur = String(s.currency || "GBP").toUpperCase();
+      const fromCur = isSupportedCurrency(rawCur) ? (rawCur as CurrencyCode) : "GBP";
+      const price =
+        typeof s.price === "number" ? convertCurrency(s.price, fromCur, displayCurrency) : null;
+      return { ...s, price_converted: price };
+    });
+  }, [snapshots, displayCurrency]);
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-10">
       <button
@@ -107,16 +143,12 @@ export default function HistoryClient() {
       <h1 className="text-2xl font-bold mb-2">Price History</h1>
 
       {userEmail && (
-        <div className="text-sm text-gray-500 mb-6">
-          Signed in as: {userEmail}
-        </div>
+        <div className="text-sm text-gray-500 mb-6">Signed in as: {userEmail}</div>
       )}
 
       {product && (
         <div className="bg-white border rounded-2xl p-5 shadow-sm mb-6">
-          <div className="font-semibold text-lg mb-1">
-            {product.title || "Untitled"}
-          </div>
+          <div className="font-semibold text-lg mb-1">{product.title || "Untitled"}</div>
 
           <div className="text-sm text-gray-500">
             Merchant: {product.merchant || "unknown"}
@@ -137,10 +169,14 @@ export default function HistoryClient() {
           </div>
 
           {latest?.seen_at && (
-            <div className="mt-3 text-xs text-gray-400">
+            <div className="mt-2 text-xs text-gray-400">
               Latest snapshot: {new Date(latest.seen_at).toLocaleString("en-GB")}
             </div>
           )}
+
+          <div className="mt-2 text-xs text-gray-400">
+            Chart currency: <b>{displayCurrency}</b>
+          </div>
         </div>
       )}
 
@@ -151,9 +187,9 @@ export default function HistoryClient() {
           <div className="text-gray-400 italic">No price history yet.</div>
         ) : (
           <>
-            <PriceHistoryChart snapshots={snapshots} />
+            <PriceHistoryChart snapshots={convertedSnapshots as any} />
             <div className="mt-4 text-xs text-gray-500">
-              Showing all snapshots for this product.
+              Values are converted to <b>{displayCurrency}</b> for the chart so it matches the cards.
             </div>
           </>
         )}

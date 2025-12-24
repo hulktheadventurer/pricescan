@@ -11,36 +11,15 @@ import {
   Legend,
 } from "chart.js";
 
-ChartJS.register(
-  LineElement,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  Tooltip,
-  Legend
-);
+ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend);
 
 type Snapshot = {
-  price: number | string | null;
   seen_at: string;
+  // we’ll plot converted numbers
+  price_converted?: number | null;
 };
 
-function toNumberPrice(p: unknown): number | null {
-  if (typeof p === "number" && Number.isFinite(p)) return p;
-  if (typeof p === "string") {
-    // keep digits, dot, minus
-    const cleaned = p.replace(/[^\d.-]/g, "");
-    const n = Number(cleaned);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
-
-export default function PriceHistoryChart({
-  snapshots = [],
-}: {
-  snapshots: Snapshot[];
-}) {
+export default function PriceHistoryChart({ snapshots = [] }: { snapshots: Snapshot[] }) {
   if (!snapshots || snapshots.length === 0) {
     return (
       <div className="w-full h-[300px] flex items-center justify-center">
@@ -49,28 +28,24 @@ export default function PriceHistoryChart({
     );
   }
 
-  // Sort ASC (oldest → newest)
   const sorted = [...snapshots].sort(
     (a, b) => new Date(a.seen_at).getTime() - new Date(b.seen_at).getTime()
   );
 
   const labels = sorted.map((s) =>
-    new Date(s.seen_at).toLocaleDateString("en-GB", {
-      day: "numeric",
-      month: "short",
-    })
+    new Date(s.seen_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })
   );
 
-  const prices = sorted.map((s) => toNumberPrice(s.price));
+  const prices = sorted.map((s) =>
+    typeof s.price_converted === "number" ? s.price_converted : null
+  );
 
   const hasAnyPrice = prices.some((p) => typeof p === "number");
 
   if (!hasAnyPrice) {
     return (
       <div className="w-full h-[300px] flex items-center justify-center">
-        <p className="text-gray-400 text-sm italic">
-          No valid prices recorded yet.
-        </p>
+        <p className="text-gray-400 text-sm italic">No valid prices recorded yet.</p>
       </div>
     );
   }
@@ -97,8 +72,7 @@ export default function PriceHistoryChart({
             legend: { display: false },
             tooltip: {
               callbacks: {
-                label: (ctx) =>
-                  ctx.raw == null ? "No price" : `Price: ${ctx.raw}`,
+                label: (ctx) => (ctx.raw == null ? "No price" : `Price: ${ctx.raw}`),
               },
             },
           },

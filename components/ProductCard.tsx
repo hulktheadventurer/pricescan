@@ -3,11 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import {
-  CurrencyCode,
-  convertCurrency,
-  isSupportedCurrency,
-} from "@/lib/currency";
+import { CurrencyCode, convertCurrency, isSupportedCurrency } from "@/lib/currency";
 
 type TrackedProduct = {
   id: string;
@@ -16,7 +12,6 @@ type TrackedProduct = {
   merchant?: string | null;
   sku?: string | null;
 
-  // from tracked_products
   is_sold_out?: boolean | null;
   is_ended?: boolean | null;
   status_message?: string | null;
@@ -28,13 +23,8 @@ type SnapshotRow = {
   currency?: string | null;
 };
 
-const AMAZON_TAG =
-  process.env.NEXT_PUBLIC_AMAZON_TAG || "theforbiddens-21";
-
-// Example prefix you set:
-// https://rzekl.com/g/1e8d1144940e8bbbb3bf16525dc3e8/
-const ALI_DEEPLINK_PREFIX =
-  process.env.NEXT_PUBLIC_ALI_DEEPLINK_PREFIX || "";
+const AMAZON_TAG = process.env.NEXT_PUBLIC_AMAZON_TAG || "theforbiddens-21";
+const ALI_PREFIX = (process.env.NEXT_PUBLIC_ALI_DEEPLINK_PREFIX || "").trim();
 
 function buildAmazonSearchUrl(title: string | null | undefined) {
   const q = (title || "").trim();
@@ -42,18 +32,19 @@ function buildAmazonSearchUrl(title: string | null | undefined) {
   return `https://www.amazon.co.uk/s?k=${encodeURIComponent(q)}&tag=${AMAZON_TAG}`;
 }
 
-function buildAliExpressSearchUrl(title: string | null | undefined) {
-  const q = (title || "").trim();
-  if (!q) return "https://www.aliexpress.com/";
-  return `https://www.aliexpress.com/wholesale?SearchText=${encodeURIComponent(q)}`;
+function aliDeeplink(targetUrl: string) {
+  if (!ALI_PREFIX) return targetUrl;
+  // Admitad-style: <prefix>?ulp=<encoded target url>
+  const joiner = ALI_PREFIX.includes("?") ? "&" : "?";
+  return `${ALI_PREFIX}${joiner}ulp=${encodeURIComponent(targetUrl)}`;
 }
 
-function wrapAliWithDeeplink(targetUrl: string) {
-  if (!ALI_DEEPLINK_PREFIX) return targetUrl;
-
-  // Admitad deeplink format is: <prefix>?ulp=<encoded_target>
-  const joiner = ALI_DEEPLINK_PREFIX.includes("?") ? "&" : "?";
-  return `${ALI_DEEPLINK_PREFIX}${joiner}ulp=${encodeURIComponent(targetUrl)}`;
+function buildAliExpressSearchUrl(title: string | null | undefined) {
+  const q = (title || "").trim();
+  const target = q
+    ? `https://www.aliexpress.com/wholesale?SearchText=${encodeURIComponent(q)}`
+    : "https://www.aliexpress.com/";
+  return aliDeeplink(target);
 }
 
 function fmt(amount: number, currency: CurrencyCode) {
@@ -73,48 +64,30 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
 
   const [busy, setBusy] = useState(false);
 
-  // Selected display currency (from Header broadcast)
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
-
-  // Latest snapshot data
   const [latestPrice, setLatestPrice] = useState<number | null>(null);
   const [latestSeenAt, setLatestSeenAt] = useState<string | null>(null);
   const [latestCurrency, setLatestCurrency] = useState<CurrencyCode>("GBP");
 
-  const amazonUrl = useMemo(
-    () => buildAmazonSearchUrl(product?.title),
-    [product?.title]
-  );
+  const amazonUrl = useMemo(() => buildAmazonSearchUrl(product?.title), [product?.title]);
+  const aliUrl = useMemo(() => buildAliExpressSearchUrl(product?.title), [product?.title]);
 
-  const aliSearchUrl = useMemo(
-    () => buildAliExpressSearchUrl(product?.title),
-    [product?.title]
-  );
-
-  const aliAffiliateUrl = useMemo(
-    () => wrapAliWithDeeplink(aliSearchUrl),
-    [aliSearchUrl]
-  );
-
-  // Listen to header currency changes
   useEffect(() => {
     const handler = (e: any) => {
-      const code = e?.detail;
-      if (code && isSupportedCurrency(code)) setDisplayCurrency(code);
+      const code = String(e?.detail || "").toUpperCase();
+      if (code && isSupportedCurrency(code)) setDisplayCurrency(code as CurrencyCode);
     };
     window.addEventListener("pricescan-currency-update", handler as any);
-    return () =>
-      window.removeEventListener("pricescan-currency-update", handler as any);
+    return () => window.removeEventListener("pricescan-currency-update", handler as any);
   }, []);
 
-  // Fetch latest snapshot
   useEffect(() => {
     let cancelled = false;
 
     async function loadLatest() {
       if (!product?.id) return;
 
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from("price_snapshots")
         .select("price, seen_at, currency")
         .eq("product_id", product.id)
@@ -124,25 +97,8 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
 
       if (cancelled) return;
 
-      if (error) {
-        const retry = await supabase
-          .from("price_snapshots")
-          .select("price, seen_at")
-          .eq("product_id", product.id)
-          .order("seen_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (!cancelled) {
-          setLatestPrice((retry.data as any)?.price ?? null);
-          setLatestSeenAt((retry.data as any)?.seen_at ?? null);
-          setLatestCurrency("GBP");
-        }
-        return;
-      }
-
       const row = data as SnapshotRow | null;
-      const rawCurrency = (row?.currency || "GBP").toUpperCase();
+      const rawCurrency = String(row?.currency || "GBP").toUpperCase();
       const snapCurrency = isSupportedCurrency(rawCurrency)
         ? (rawCurrency as CurrencyCode)
         : "GBP";
@@ -158,7 +114,9 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     };
   }, [product?.id, supabase]);
 
-  // Convert snapshot price into selected display currency
+  const merchant = product.merchant || "ebay";
+  const sku = product.sku || "";
+
   const convertedPrice = useMemo(() => {
     if (latestPrice == null) return null;
     return convertCurrency(latestPrice, latestCurrency, displayCurrency);
@@ -169,7 +127,6 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     return fmt(convertedPrice, displayCurrency);
   }, [convertedPrice, displayCurrency]);
 
-  // Badge logic from tracked_products
   const badge = useMemo(() => {
     if (product.is_ended) return { text: "Ended", cls: "bg-gray-900 text-white" };
     if (product.is_sold_out) return { text: "Sold out", cls: "bg-red-600 text-white" };
@@ -180,13 +137,8 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     if (!product?.id) return;
     setBusy(true);
     try {
-      const { error } = await supabase
-        .from("tracked_products")
-        .delete()
-        .eq("id", product.id);
-
+      const { error } = await supabase.from("tracked_products").delete().eq("id", product.id);
       if (error) throw error;
-
       window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
     } catch (e) {
       console.error(e);
@@ -199,13 +151,11 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
   function handleView() {
     if (product.url) window.open(product.url, "_blank", "noopener,noreferrer");
   }
-
   function handleAmazon() {
     window.open(amazonUrl, "_blank", "noopener,noreferrer");
   }
-
   function handleAli() {
-    window.open(aliAffiliateUrl, "_blank", "noopener,noreferrer");
+    window.open(aliUrl, "_blank", "noopener,noreferrer");
   }
 
   return (
@@ -238,8 +188,8 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
       )}
 
       <div className="text-sm text-gray-500 mb-4">
-        Merchant: {product.merchant || "ebay"}
-        {product.sku ? ` • SKU: ${product.sku}` : ""}
+        Merchant: {merchant}
+        {sku ? ` • SKU: ${sku}` : ""}
       </div>
 
       <div className="flex items-center gap-3 mb-4">
@@ -262,7 +212,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         <button
           onClick={handleAmazon}
           className="flex-1 bg-white border py-2 rounded hover:bg-gray-50"
-          title="Search this item on Amazon"
+          title="Search this item on Amazon (affiliate)"
         >
           Amazon
         </button>
@@ -270,7 +220,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         <button
           onClick={handleAli}
           className="flex-1 bg-white border py-2 rounded hover:bg-gray-50"
-          title={ALI_DEEPLINK_PREFIX ? "Search on AliExpress (affiliate)" : "Search on AliExpress"}
+          title={ALI_PREFIX ? "Search on AliExpress (affiliate)" : "Search on AliExpress"}
         >
           AliExpress
         </button>

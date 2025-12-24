@@ -47,15 +47,15 @@ export default function Header() {
 
         if (!mounted) return;
 
-        if (data?.currency && isSupportedCurrency(data.currency)) {
-          const c = data.currency as CurrencyCode;
-          setCurrency(c);
-          broadcastCurrency(c);
+        const cur = String(data?.currency || "GBP").toUpperCase();
+        if (isSupportedCurrency(cur)) {
+          setCurrency(cur as CurrencyCode);
+          broadcastCurrency(cur as CurrencyCode);
         } else {
-          broadcastCurrency(currency);
+          broadcastCurrency("GBP");
         }
       } else {
-        broadcastCurrency(currency);
+        broadcastCurrency("GBP");
       }
     };
 
@@ -64,28 +64,7 @@ export default function Header() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      const nextUser = session?.user ?? null;
-      setUser(nextUser);
-
-      // If user logs in, try to load their currency
-      if (nextUser?.id) {
-        supabase
-          .from("user_profile")
-          .select("currency")
-          .eq("user_id", nextUser.id)
-          .maybeSingle()
-          .then(({ data }) => {
-            if (data?.currency && isSupportedCurrency(data.currency)) {
-              const c = data.currency as CurrencyCode;
-              setCurrency(c);
-              broadcastCurrency(c);
-            } else {
-              broadcastCurrency(currency);
-            }
-          });
-      } else {
-        broadcastCurrency(currency);
-      }
+      setUser(session?.user ?? null);
     });
 
     return () => {
@@ -141,10 +120,7 @@ export default function Header() {
   return (
     <header className="w-full border-b bg-white">
       <div className="max-w-6xl mx-auto flex justify-between items-center py-4 px-4">
-        <Link
-          href="/"
-          className="text-xl font-semibold flex items-center space-x-2"
-        >
+        <Link href="/" className="text-xl font-semibold flex items-center space-x-2">
           <span role="img">📈</span>
           <span>PriceScan</span>
         </Link>
@@ -156,17 +132,13 @@ export default function Header() {
             <select
               className="border p-1 rounded-md text-sm"
               value={currency}
-              onChange={(e) =>
-                handleCurrencyChange(e.target.value as CurrencyCode)
-              }
+              onChange={(e) => handleCurrencyChange(e.target.value as CurrencyCode)}
             >
-              {SUPPORTED_CURRENCIES.slice()
-                .sort()
-                .map((code) => (
-                  <option key={code} value={code}>
-                    {code}
-                  </option>
-                ))}
+              {SUPPORTED_CURRENCIES.slice().sort().map((code) => (
+                <option key={code} value={code}>
+                  {code}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -174,10 +146,7 @@ export default function Header() {
           {user ? (
             <>
               <span className="text-gray-600 text-sm">{user.email}</span>
-              <button
-                onClick={signOut}
-                className="text-red-600 text-sm hover:underline"
-              >
+              <button onClick={signOut} className="text-red-600 text-sm hover:underline">
                 Sign Out
               </button>
             </>

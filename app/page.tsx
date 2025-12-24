@@ -17,21 +17,6 @@ export default function HomePage() {
   const [user, setUser] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
 
-  // ✅ Single source of truth for refreshing list
-  const loadProducts = useCallback(async () => {
-    if (!user) {
-      setProducts([]);
-      return;
-    }
-
-    const { data, error } = await supabase
-      .from("tracked_products")
-      .select("*")
-      .order("created_at", { ascending: false });
-
-    if (!error) setProducts(data ?? []);
-  }, [supabase, user]);
-
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setUser(data.session?.user ?? null);
@@ -46,26 +31,39 @@ export default function HomePage() {
     return () => subscription.unsubscribe();
   }, [supabase]);
 
+  const loadProducts = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("tracked_products")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (!error) setProducts(data ?? []);
+  }, [supabase]);
+
   useEffect(() => {
+    if (!user) {
+      setProducts([]);
+      return;
+    }
+
     loadProducts();
 
     const refresh = () => loadProducts();
     window.addEventListener("pricescan-products-refresh", refresh as any);
     return () =>
       window.removeEventListener("pricescan-products-refresh", refresh as any);
-  }, [loadProducts]);
+  }, [user, loadProducts]);
 
   async function handleTrack() {
     const input = url.trim();
     if (!input) return toast.error("Paste a product URL first.");
-
     if (!user) return toast.error("Please sign in to track products.");
 
-    // ✅ AliExpress tracking paused (keep outbound button only)
     if (isAliExpressUrl(input)) {
-      return toast.error(
+      toast.error(
         "AliExpress tracking is paused. Use the AliExpress button on cards for affiliate search."
       );
+      return;
     }
 
     setLoading(true);
@@ -83,11 +81,11 @@ export default function HomePage() {
       setUrl("");
       toast.success("Product added.");
 
-      // ✅ IMPORTANT: tiny delay so the new row is visible before select()
-      await new Promise((r) => setTimeout(r, 300));
+      // Refresh list (sometimes insert is slightly delayed, so we retry once)
       await loadProducts();
+      setTimeout(() => loadProducts(), 700);
     } catch (err: any) {
-      toast.error(err.message || "Something went wrong.");
+      toast.error(err?.message || "Something went wrong.");
     } finally {
       setLoading(false);
     }
@@ -108,9 +106,6 @@ export default function HomePage() {
           onChange={(e) => setUrl(e.target.value)}
           placeholder="Paste an eBay link…"
           className="flex-1 border rounded px-4 py-2"
-          onKeyDown={(e) => {
-            if (e.key === "Enter") handleTrack();
-          }}
         />
         <button
           onClick={handleTrack}
@@ -122,7 +117,9 @@ export default function HomePage() {
       </div>
 
       {products.length === 0 ? (
-        <p className="text-gray-500 text-center">No items yet — track something!</p>
+        <p className="text-gray-500 text-center">
+          No items yet — track something!
+        </p>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {products.map((p) => (
