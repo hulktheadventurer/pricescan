@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { toast } from "sonner";
 
 import {
   SUPPORTED_CURRENCIES,
@@ -11,22 +13,28 @@ import {
 } from "@/lib/currency";
 
 export default function Header() {
-  const supabase = createClientComponentClient();
+  // ✅ create once (stable)
+  const supabase = useMemo(() => createClientComponentClient(), []);
+  const router = useRouter();
 
   const [user, setUser] = useState<any>(null);
   const [currency, setCurrency] = useState<CurrencyCode>("GBP");
+  const [signingOut, setSigningOut] = useState(false);
+
+  // sign-in UI state (top right)
+  const [email, setEmail] = useState("");
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     let mounted = true;
 
     const load = async () => {
-      const { data: userData } = await supabase.auth.getUser();
-      const u = userData?.user || null;
+      const { data: sessionData } = await supabase.auth.getSession();
+      const u = sessionData?.session?.user ?? null;
       if (!mounted) return;
 
       setUser(u);
 
-      // Load currency preference if user exists
       if (u) {
         const { data } = await supabase
           .from("user_profile")
@@ -55,8 +63,7 @@ export default function Header() {
       mounted = false;
       subscription.unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [supabase]);
 
   function broadcastCurrency(code: CurrencyCode) {
     window.dispatchEvent(
@@ -78,13 +85,55 @@ export default function Header() {
     await persistCurrency(code);
   }
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    window.location.href = "/";
+  async function sendMagicLink() {
+    const e = email.trim().toLowerCase();
+    if (!e) return toast.error("Enter your email to sign in.");
+
+    setSending(true);
+    try {
+      const redirectTo = `${window.location.origin}/auth/callback`;
+
+      const { error } = await supabase.auth.signInWithOtp({
+        email: e,
+        options: { emailRedirectTo: redirectTo },
+      });
+
+      if (error) throw error;
+
+      toast.success("Magic link sent — check your email.");
+      setEmail("");
+    } catch (err: any) {
+      toast.error(err?.message || "Error sending magic link email");
+    } finally {
+      setSending(false);
+    }
   }
 
-  function triggerSignInModal() {
-    window.dispatchEvent(new CustomEvent("pricescan-open-signin"));
+  async function signOut() {
+    if (signingOut) return;
+    setSigningOut(true);
+
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+
+      // ✅ clear local header state immediately
+      setUser(null);
+
+      // ✅ tell the rest of the app to clear + reload
+      window.dispatchEvent(new CustomEvent("pricescan-signed-out"));
+      window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
+
+      toast.success("Signed out.");
+
+      // ✅ hard reset UI state / cache
+      router.refresh();
+      window.location.href = "/";
+    } catch (err: any) {
+      console.error("Sign out failed:", err);
+      toast.error(err?.message || "Sign out failed.");
+      setSigningOut(false);
+    }
   }
 
   return (
@@ -116,17 +165,30 @@ export default function Header() {
           {user ? (
             <>
               <span className="text-gray-600 text-sm">{user.email}</span>
-              <button onClick={signOut} className="text-red-600 text-sm hover:underline">
-                Sign Out
+              <button
+                onClick={signOut}
+                disabled={signingOut}
+                className="text-red-600 text-sm hover:underline disabled:opacity-60"
+              >
+                {signingOut ? "Signing out…" : "Sign Out"}
               </button>
             </>
           ) : (
-            <button
-              onClick={triggerSignInModal}
-              className="bg-blue-600 text-white text-sm px-3 py-1 rounded hover:bg-blue-700"
-            >
-              Sign in
-            </button>
+            <div className="flex items-center gap-2">
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Enter email to sign in"
+                className="border rounded px-2 py-1 text-sm w-56"
+              />
+              <button
+                onClick={sendMagicLink}
+                disabled={sending}
+                className="bg-blue-600 text-white text-sm px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-60"
+              >
+                {sending ? "Sending…" : "Sign in"}
+              </button>
+            </div>
           )}
         </div>
       </div>
