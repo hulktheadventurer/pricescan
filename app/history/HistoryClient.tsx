@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 
 import PriceHistoryChart from "@/components/PriceHistoryChart";
-import { convertCurrency, isSupportedCurrency, CurrencyCode } from "@/lib/currency";
+import { isSupportedCurrency, CurrencyCode } from "@/lib/currency";
 
 type Snapshot = {
   id?: string;
@@ -31,21 +31,21 @@ export default function HistoryClient() {
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState<string>("");
   const [product, setProduct] = useState<TrackedProduct | null>(null);
-
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>("GBP");
 
-  // listen to header currency changes
+  // listen to header currency changes (same as ProductCard)
   useEffect(() => {
     const handler = (e: any) => {
       const code = String(e?.detail || "").toUpperCase();
       if (isSupportedCurrency(code)) setDisplayCurrency(code as CurrencyCode);
     };
     window.addEventListener("pricescan-currency-update", handler as any);
-    return () => window.removeEventListener("pricescan-currency-update", handler as any);
+    return () =>
+      window.removeEventListener("pricescan-currency-update", handler as any);
   }, []);
 
-  // Load session + profile currency (initial)
+  // load user + saved currency
   useEffect(() => {
     let cancelled = false;
 
@@ -77,7 +77,7 @@ export default function HistoryClient() {
     };
   }, [supabase]);
 
-  // Load product + snapshots
+  // load product + snapshots
   useEffect(() => {
     let cancelled = false;
 
@@ -101,10 +101,9 @@ export default function HistoryClient() {
         .eq("product_id", productId)
         .order("seen_at", { ascending: true });
 
-      if (!cancelled) {
-        setSnapshots((snaps as any) || []);
-        setLoading(false);
-      }
+      if (cancelled) return;
+      setSnapshots((snaps as any) || []);
+      setLoading(false);
     }
 
     load();
@@ -121,16 +120,6 @@ export default function HistoryClient() {
     return snapshots[snapshots.length - 1];
   }, [hasSnapshots, snapshots]);
 
-  const convertedSnapshots = useMemo(() => {
-    return snapshots.map((s) => {
-      const rawCur = String(s.currency || "GBP").toUpperCase();
-      const fromCur = isSupportedCurrency(rawCur) ? (rawCur as CurrencyCode) : "GBP";
-      const price =
-        typeof s.price === "number" ? convertCurrency(s.price, fromCur, displayCurrency) : null;
-      return { ...s, price_converted: price };
-    });
-  }, [snapshots, displayCurrency]);
-
   return (
     <div className="max-w-4xl mx-auto px-4 py-10">
       <button
@@ -143,12 +132,16 @@ export default function HistoryClient() {
       <h1 className="text-2xl font-bold mb-2">Price History</h1>
 
       {userEmail && (
-        <div className="text-sm text-gray-500 mb-6">Signed in as: {userEmail}</div>
+        <div className="text-sm text-gray-500 mb-6">
+          Signed in as: {userEmail}
+        </div>
       )}
 
       {product && (
         <div className="bg-white border rounded-2xl p-5 shadow-sm mb-6">
-          <div className="font-semibold text-lg mb-1">{product.title || "Untitled"}</div>
+          <div className="font-semibold text-lg mb-1">
+            {product.title || "Untitled"}
+          </div>
 
           <div className="text-sm text-gray-500">
             Merchant: {product.merchant || "unknown"}
@@ -187,9 +180,14 @@ export default function HistoryClient() {
           <div className="text-gray-400 italic">No price history yet.</div>
         ) : (
           <>
-            <PriceHistoryChart snapshots={convertedSnapshots as any} />
+            <PriceHistoryChart
+              snapshots={snapshots}
+              displayCurrency={displayCurrency}
+            />
+
             <div className="mt-4 text-xs text-gray-500">
-              Values are converted to <b>{displayCurrency}</b> for the chart so it matches the cards.
+              The chart converts each snapshot into <b>{displayCurrency}</b> using
+              the same conversion logic as the cards.
             </div>
           </>
         )}
