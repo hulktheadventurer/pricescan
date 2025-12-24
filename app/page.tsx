@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import ProductCard from "@/components/ProductCard";
 import { toast } from "sonner";
@@ -24,58 +24,76 @@ export default function HomePage() {
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
 
-  // 🔁 Load products
-  const loadProducts = useCallback(async () => {
+  async function loadProducts(forUser: any) {
+    if (!forUser) {
+      setProducts([]);
+      return;
+    }
+
     const { data, error } = await supabase
       .from("tracked_products")
       .select("*")
       .order("created_at", { ascending: false });
 
     if (!error) setProducts(data ?? []);
-  }, [supabase]);
+  }
 
-  // ✅ Core track function (assumes user is logged in)
-  const trackUrl = useCallback(
-    async (input: string) => {
-      const trimmed = (input || "").trim();
-      if (!trimmed) return;
+  async function trackUrl(input: string) {
+    // basic guard
+    if (!input) return;
 
-      if (isAliExpressUrl(trimmed)) {
-        toast.error(
-          "AliExpress tracking is paused. Use the AliExpress button on cards for affiliate search."
-        );
-        return;
-      }
+    if (isAliExpressUrl(input)) {
+      toast.error(
+        "AliExpress tracking is paused. Use the AliExpress button on cards for affiliate search."
+      );
+      return;
+    }
 
-      setLoading(true);
-      try {
-        const res = await fetch("/api/track", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: trimmed }),
-        });
+    setLoading(true);
+    try {
+      const res = await fetch("/api/track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: input }),
+      });
 
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error || "Failed to track product");
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Failed to track product");
 
-        setUrl("");
-        toast.success("Product added.");
+      toast.success("Product added.");
+      setUrl("");
+      window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
+    } catch (err: any) {
+      toast.error(err?.message || "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
-        // refresh list immediately
-        await loadProducts();
-      } catch (err: any) {
-        toast.error(err.message || "Something went wrong.");
-      } finally {
-        setLoading(false);
-      }
-    },
-    [loadProducts]
-  );
-
+  // session + auth changes
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user ?? null);
-    });
+    let mounted = true;
+
+    async function init() {
+      const { data } = await supabase.auth.getSession();
+      if (!mounted) return;
+
+      const u = data.session?.user ?? null;
+      setUser(u);
+
+      await loadProducts(u);
+
+      // ✅ If user is already logged in and there is a pending URL, auto-track it now
+      if (u) {
+        const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
+        if (pending) {
+          sessionStorage.removeItem(PENDING_TRACK_KEY);
+          await trackUrl(pending);
+        }
+      }
+    }
+
+    init();
 
     const {
       data: { subscription },
@@ -83,48 +101,37 @@ export default function HomePage() {
       const u = session?.user ?? null;
       setUser(u);
 
-      // ✅ Close modal after sign-in
-      if (u) setShowSignIn(false);
-
-      // ✅ If user clicked Track before signing in, auto-run track after login
       if (u) {
-        const pending =
-          (typeof window !== "undefined" &&
-            window.localStorage.getItem(PENDING_TRACK_KEY)) ||
-          "";
+        setShowSignIn(false);
+        await loadProducts(u);
 
+        // ✅ After login completes, auto-track the URL the user tried to track before login
+        const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
         if (pending) {
-          window.localStorage.removeItem(PENDING_TRACK_KEY);
-          // keep the input showing what they tried to track
-          setUrl(pending);
+          sessionStorage.removeItem(PENDING_TRACK_KEY);
           await trackUrl(pending);
         }
+      } else {
+        setProducts([]);
       }
     });
 
-    return () => subscription.unsubscribe();
-  }, [supabase, trackUrl]);
-
-  useEffect(() => {
-    if (!user) {
-      setProducts([]);
-      return;
-    }
-
-    loadProducts();
-
-    const refresh = () => loadProducts();
+    const refresh = () => loadProducts(user);
     window.addEventListener("pricescan-products-refresh", refresh as any);
-    return () =>
-      window.removeEventListener("pricescan-products-refresh", refresh as any);
-  }, [user, loadProducts]);
 
-  // ✅ allow header "Sign in" button to open modal too
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+      window.removeEventListener("pricescan-products-refresh", refresh as any);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase]);
+
+  // allow header "Sign in" button to open modal too
   useEffect(() => {
     const open = () => setShowSignIn(true);
     window.addEventListener("pricescan-open-signin", open as any);
-    return () =>
-      window.removeEventListener("pricescan-open-signin", open as any);
+    return () => window.removeEventListener("pricescan-open-signin", open as any);
   }, []);
 
   async function sendMagicLink() {
@@ -144,7 +151,6 @@ export default function HomePage() {
 
       toast.success("Magic link sent — check your email.");
       setEmail("");
-      // keep modal open so user understands what happened
     } catch (err: any) {
       toast.error(err?.message || "Failed to send magic link.");
     } finally {
@@ -160,11 +166,9 @@ export default function HomePage() {
     }
 
     // ✅ OLD FLOW: click Track -> show email modal if not logged in
+    // ✅ BUT ALSO: remember what they wanted to track, so we auto-track after login
     if (!user) {
-      // store the URL so it auto-tracks right after login
-      try {
-        window.localStorage.setItem(PENDING_TRACK_KEY, input);
-      } catch {}
+      sessionStorage.setItem(PENDING_TRACK_KEY, input);
       setShowSignIn(true);
       return;
     }
@@ -182,9 +186,7 @@ export default function HomePage() {
             onClick={() => setShowSignIn(false)}
           />
           <div className="relative bg-white w-[92%] max-w-md rounded-2xl shadow-xl border p-6">
-            <div className="text-xl font-semibold mb-2">
-              Sign in to PriceScan
-            </div>
+            <div className="text-xl font-semibold mb-2">Sign in to PriceScan</div>
             <div className="text-sm text-gray-600 mb-4">
               Enter your email and we’ll send you a magic link.
             </div>
@@ -193,7 +195,7 @@ export default function HomePage() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="your@email.com"
+              placeholder="Enter email to sign in"
               className="w-full border rounded px-3 py-2 mb-3"
               autoFocus
             />
