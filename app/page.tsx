@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import ProductCard from "@/components/ProductCard";
 import { toast } from "sonner";
@@ -31,33 +31,57 @@ export default function HomePage() {
     return () => subscription.unsubscribe();
   }, [supabase]);
 
-  const loadProducts = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("tracked_products")
-      .select("*")
-      .order("created_at", { ascending: false });
-
-    if (!error) setProducts(data ?? []);
-  }, [supabase]);
-
   useEffect(() => {
     if (!user) {
       setProducts([]);
       return;
     }
 
-    loadProducts();
+    async function load() {
+      const { data, error } = await supabase
+        .from("tracked_products")
+        .select("*")
+        .order("created_at", { ascending: false });
 
-    const refresh = () => loadProducts();
+      if (!error) setProducts(data ?? []);
+    }
+
+    load();
+
+    const refresh = () => load();
     window.addEventListener("pricescan-products-refresh", refresh as any);
     return () =>
       window.removeEventListener("pricescan-products-refresh", refresh as any);
-  }, [user, loadProducts]);
+  }, [user, supabase]);
+
+  function forceSignInFlow() {
+    toast.error("Please sign in first — enter your email (top right) and click Sign in.");
+
+    // bring the email box into view and focus it
+    setTimeout(() => {
+      const el = document.getElementById(
+        "pricescan-signin-email"
+      ) as HTMLInputElement | null;
+
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.focus();
+      }
+    }, 50);
+  }
 
   async function handleTrack() {
     const input = url.trim();
-    if (!input) return toast.error("Paste a product URL first.");
-    if (!user) return toast.error("Please sign in to track products.");
+    if (!input) {
+      toast.error("Paste a product URL first.");
+      return;
+    }
+
+    // ✅ the exact flow you want: user hits Track → we force sign-in
+    if (!user) {
+      forceSignInFlow();
+      return;
+    }
 
     if (isAliExpressUrl(input)) {
       toast.error(
@@ -81,11 +105,10 @@ export default function HomePage() {
       setUrl("");
       toast.success("Product added.");
 
-      // Refresh list (sometimes insert is slightly delayed, so we retry once)
-      await loadProducts();
-      setTimeout(() => loadProducts(), 700);
+      // refresh list immediately
+      window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
     } catch (err: any) {
-      toast.error(err?.message || "Something went wrong.");
+      toast.error(err.message || "Something went wrong.");
     } finally {
       setLoading(false);
     }
@@ -95,9 +118,7 @@ export default function HomePage() {
     <div className="max-w-6xl mx-auto px-4 py-10">
       <div className="mb-8" />
 
-      <h1 className="text-3xl font-bold mb-6">
-        🔎 PriceScan — Track Product Prices
-      </h1>
+      <h1 className="text-3xl font-bold mb-6">🔎 PriceScan — Track Product Prices</h1>
 
       <div className="flex gap-3 mb-10">
         <input
@@ -116,10 +137,12 @@ export default function HomePage() {
         </button>
       </div>
 
-      {products.length === 0 ? (
+      {!user ? (
         <p className="text-gray-500 text-center">
-          No items yet — track something!
+          Sign in (top right) to start tracking products.
         </p>
+      ) : products.length === 0 ? (
+        <p className="text-gray-500 text-center">No items yet — track something!</p>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {products.map((p) => (

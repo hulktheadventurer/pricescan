@@ -21,12 +21,6 @@ export default function Header() {
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
 
-  function broadcastCurrency(code: CurrencyCode) {
-    window.dispatchEvent(
-      new CustomEvent("pricescan-currency-update", { detail: code })
-    );
-  }
-
   useEffect(() => {
     let mounted = true;
 
@@ -47,15 +41,10 @@ export default function Header() {
 
         if (!mounted) return;
 
-        const cur = String(data?.currency || "GBP").toUpperCase();
-        if (isSupportedCurrency(cur)) {
-          setCurrency(cur as CurrencyCode);
-          broadcastCurrency(cur as CurrencyCode);
-        } else {
-          broadcastCurrency("GBP");
+        if (data?.currency && isSupportedCurrency(data.currency)) {
+          setCurrency(data.currency as CurrencyCode);
+          broadcastCurrency(data.currency as CurrencyCode);
         }
-      } else {
-        broadcastCurrency("GBP");
       }
     };
 
@@ -74,6 +63,12 @@ export default function Header() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  function broadcastCurrency(code: CurrencyCode) {
+    window.dispatchEvent(
+      new CustomEvent("pricescan-currency-update", { detail: code })
+    );
+  }
+
   async function persistCurrency(nextCurrency: CurrencyCode) {
     if (!user) return;
     await supabase.from("user_profile").upsert({
@@ -90,7 +85,7 @@ export default function Header() {
 
   async function sendMagicLink() {
     const e = email.trim().toLowerCase();
-    if (!e) return toast.error("Enter your email first.");
+    if (!e) return toast.error("Enter your email to sign in.");
 
     setSending(true);
     try {
@@ -153,10 +148,12 @@ export default function Header() {
           ) : (
             <div className="flex items-center gap-2">
               <input
+                id="pricescan-signin-email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="email for magic link"
-                className="border rounded px-2 py-1 text-sm w-52"
+                placeholder="Enter email to sign in"
+                className="border rounded px-2 py-1 text-sm w-60"
+                autoComplete="email"
               />
               <button
                 onClick={sendMagicLink}
