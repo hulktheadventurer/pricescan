@@ -5,14 +5,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 
 import PriceHistoryChart from "@/components/PriceHistoryChart";
-import { isSupportedCurrency, CurrencyCode } from "@/lib/currency";
 
 type Snapshot = {
   id?: string;
   price: number | null;
   currency: string | null;
   seen_at: string;
-  ship_country?: string | null;
 };
 
 type TrackedProduct = {
@@ -20,7 +18,6 @@ type TrackedProduct = {
   title: string | null;
   url: string | null;
   merchant: string | null;
-  ship_country?: string | null;
 };
 
 export default function HistoryClient() {
@@ -33,77 +30,50 @@ export default function HistoryClient() {
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState<string>("");
   const [product, setProduct] = useState<TrackedProduct | null>(null);
-
-  const [shipCountry, setShipCountry] = useState<string>("GB");
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [currencyHint, setCurrencyHint] = useState<CurrencyCode>("GBP");
 
-  // Load session + profile prefs
+  // Load session (for display only)
   useEffect(() => {
     let cancelled = false;
 
     async function init() {
-      setLoading(true);
-
       const { data: u } = await supabase.auth.getUser();
       if (cancelled) return;
-
       setUserEmail(u?.user?.email || "");
-
-      // Get user profile (ship + currency)
-      if (u?.user?.id) {
-        const { data: prof } = await supabase
-          .from("user_profile")
-          .select("ship_country, currency")
-          .eq("user_id", u.user.id)
-          .maybeSingle();
-
-        if (!cancelled) {
-          const sc = (prof?.ship_country || "GB").toUpperCase();
-          setShipCountry(sc);
-
-          const cur = String(prof?.currency || "GBP").toUpperCase();
-          if (isSupportedCurrency(cur)) setCurrencyHint(cur as CurrencyCode);
-        }
-      }
-
-      setLoading(false);
     }
 
     init();
-
     return () => {
       cancelled = true;
     };
   }, [supabase]);
 
-  // Load product + snapshots (filtered by ship country)
+  // Load product + snapshots (NO ship_country filtering)
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
-      if (!productId) return;
+      if (!productId) {
+        setLoading(false);
+        return;
+      }
 
       setLoading(true);
 
       const { data: prod } = await supabase
         .from("tracked_products")
-        .select("id,title,url,merchant,ship_country")
+        .select("id,title,url,merchant")
         .eq("id", productId)
         .maybeSingle();
 
       if (cancelled) return;
       setProduct((prod as any) || null);
 
-      // ✅ filter snapshots by ship_country if column exists
-      // If you have older rows without ship_country, you can show them only when shipCountry == "".
-      const q = supabase
+      const { data: snaps } = await supabase
         .from("price_snapshots")
-        .select("id,price,currency,seen_at,ship_country")
+        .select("id,price,currency,seen_at")
         .eq("product_id", productId)
         .order("seen_at", { ascending: true });
-
-      const { data: snaps } = await q.eq("ship_country", shipCountry);
 
       if (!cancelled) {
         setSnapshots((snaps as any) || []);
@@ -116,7 +86,7 @@ export default function HistoryClient() {
     return () => {
       cancelled = true;
     };
-  }, [supabase, productId, shipCountry]);
+  }, [supabase, productId]);
 
   const hasSnapshots = snapshots.length > 0;
 
@@ -147,6 +117,7 @@ export default function HistoryClient() {
           <div className="font-semibold text-lg mb-1">
             {product.title || "Untitled"}
           </div>
+
           <div className="text-sm text-gray-500">
             Merchant: {product.merchant || "unknown"}
             {product.url ? (
@@ -165,13 +136,8 @@ export default function HistoryClient() {
             ) : null}
           </div>
 
-          <div className="mt-3 text-sm text-gray-600">
-            Ship to: <span className="font-semibold">{shipCountry}</span>{" "}
-            <span className="text-gray-400">(based on your profile)</span>
-          </div>
-
           {latest?.seen_at && (
-            <div className="mt-2 text-xs text-gray-400">
+            <div className="mt-3 text-xs text-gray-400">
               Latest snapshot: {new Date(latest.seen_at).toLocaleString("en-GB")}
             </div>
           )}
@@ -181,23 +147,14 @@ export default function HistoryClient() {
       <div className="bg-white border rounded-2xl p-5 shadow-sm">
         {loading ? (
           <div className="text-gray-500">Loading…</div>
+        ) : !hasSnapshots ? (
+          <div className="text-gray-400 italic">No price history yet.</div>
         ) : (
           <>
-            {!hasSnapshots ? (
-              <div className="text-gray-400 italic">
-                No price history yet for ship country <b>{shipCountry}</b>.
-              </div>
-            ) : (
-              <>
-                <PriceHistoryChart snapshots={snapshots} />
-
-                <div className="mt-4 text-xs text-gray-500">
-                  Showing snapshots for <b>{shipCountry}</b>. Currency values
-                  are stored as returned by AliExpress/eBay (your display
-                  currency conversion happens on the cards).
-                </div>
-              </>
-            )}
+            <PriceHistoryChart snapshots={snapshots} />
+            <div className="mt-4 text-xs text-gray-500">
+              Showing all snapshots for this product.
+            </div>
           </>
         )}
       </div>
