@@ -31,6 +31,14 @@ type SnapshotRow = {
   currency?: string | null;
 };
 
+const AMAZON_TAG = "theforbiddens-21";
+
+function buildAmazonSearchUrl(title: string | null | undefined) {
+  const q = (title || "").trim();
+  if (!q) return `https://www.amazon.co.uk/?tag=${AMAZON_TAG}`;
+  return `https://www.amazon.co.uk/s?k=${encodeURIComponent(q)}&tag=${AMAZON_TAG}`;
+}
+
 function fmt(amount: number, currency: CurrencyCode) {
   try {
     return new Intl.NumberFormat(undefined, {
@@ -55,6 +63,11 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
   const [latestPrice, setLatestPrice] = useState<number | null>(null);
   const [latestSeenAt, setLatestSeenAt] = useState<string | null>(null);
   const [latestCurrency, setLatestCurrency] = useState<CurrencyCode>("GBP");
+
+  const amazonUrl = useMemo(
+    () => buildAmazonSearchUrl(product?.title),
+    [product?.title]
+  );
 
   // Listen to header currency changes
   useEffect(() => {
@@ -135,8 +148,10 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
 
   // ✅ Badge logic from tracked_products
   const badge = useMemo(() => {
-    if (product.is_ended) return { text: "Ended", cls: "bg-gray-900 text-white" };
-    if (product.is_sold_out) return { text: "Sold out", cls: "bg-red-600 text-white" };
+    if (product.is_ended)
+      return { text: "Ended", cls: "bg-gray-900 text-white" };
+    if (product.is_sold_out)
+      return { text: "Sold out", cls: "bg-red-600 text-white" };
     return null;
   }, [product.is_ended, product.is_sold_out]);
 
@@ -162,6 +177,10 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
 
   function handleView() {
     if (product.url) window.open(product.url, "_blank", "noopener,noreferrer");
+  }
+
+  function handleAmazon() {
+    window.open(amazonUrl, "_blank", "noopener,noreferrer");
   }
 
   return (
@@ -214,6 +233,14 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
           className="flex-1 bg-blue-600 text-white py-2 rounded hover:bg-blue-700"
         >
           View
+        </button>
+
+        <button
+          onClick={handleAmazon}
+          className="flex-1 bg-white border py-2 rounded hover:bg-gray-50"
+          title="Search this item on Amazon"
+        >
+          View on Amazon
         </button>
 
         <button
