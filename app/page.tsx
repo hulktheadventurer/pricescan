@@ -5,6 +5,18 @@ import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import ProductCard from "@/components/ProductCard";
 import { toast } from "sonner";
 
+function isAliExpressUrl(u: string) {
+  return /aliexpress\./i.test(u);
+}
+
+function isAmazonUrl(u: string) {
+  return /amazon\./i.test(u);
+}
+
+function isEbayUrl(u: string) {
+  return /(^|\.)ebay\./i.test(u) || /ebay\.[a-z.]+\/itm\//i.test(u);
+}
+
 export default function HomePage() {
   const supabase = createClientComponentClient();
 
@@ -27,23 +39,32 @@ export default function HomePage() {
     return () => subscription.unsubscribe();
   }, [supabase]);
 
-  useEffect(() => {
+  async function reloadProducts() {
     if (!user) {
       setProducts([]);
       return;
     }
 
-    async function load() {
-      const { data, error } = await supabase
-        .from("tracked_products")
-        .select("*")
-        .order("created_at", { ascending: false });
+    const { data, error } = await supabase
+      .from("tracked_products")
+      .select("*")
+      .order("created_at", { ascending: false });
 
-      if (!error) setProducts(data ?? []);
-    }
+    if (!error) setProducts(data ?? []);
+  }
 
-    load();
-  }, [user, supabase]);
+  useEffect(() => {
+    reloadProducts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  useEffect(() => {
+    const handler = () => reloadProducts();
+    window.addEventListener("pricescan-products-refresh", handler as any);
+    return () =>
+      window.removeEventListener("pricescan-products-refresh", handler as any);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   async function handleTrack() {
     const input = url.trim();
@@ -57,6 +78,26 @@ export default function HomePage() {
       return;
     }
 
+    // ✅ MVP rule: only allow tracking where we can actually track price
+    if (isAliExpressUrl(input)) {
+      toast.error(
+        "AliExpress tracking is paused. For now, paste an eBay link (AliExpress button is available on tracked items)."
+      );
+      return;
+    }
+
+    if (isAmazonUrl(input)) {
+      toast.error(
+        "Amazon tracking requires PA-API access. For now, paste an eBay link (Amazon button is available on tracked items)."
+      );
+      return;
+    }
+
+    if (!isEbayUrl(input)) {
+      toast.error("For now, PriceScan only tracks eBay links.");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -67,18 +108,11 @@ export default function HomePage() {
       });
 
       const json = await res.json();
-
       if (!res.ok) throw new Error(json.error || "Failed to track product");
 
       setUrl("");
       toast.success("Product added.");
-
-      const { data } = await supabase
-        .from("tracked_products")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      setProducts(data ?? []);
+      await reloadProducts();
     } catch (err: any) {
       toast.error(err.message || "Something went wrong.");
     } finally {
@@ -112,9 +146,7 @@ export default function HomePage() {
       </div>
 
       {products.length === 0 ? (
-        <p className="text-gray-500 text-center">
-          No items yet — track something!
-        </p>
+        <p className="text-gray-500 text-center">No items yet — track something!</p>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {products.map((p) => (
