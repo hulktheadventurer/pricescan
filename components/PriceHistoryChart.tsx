@@ -21,9 +21,20 @@ ChartJS.register(
 );
 
 type Snapshot = {
-  price: number | null;
+  price: number | string | null;
   seen_at: string;
 };
+
+function toNumberPrice(p: unknown): number | null {
+  if (typeof p === "number" && Number.isFinite(p)) return p;
+  if (typeof p === "string") {
+    // keep digits, dot, minus
+    const cleaned = p.replace(/[^\d.-]/g, "");
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
 
 export default function PriceHistoryChart({
   snapshots = [],
@@ -50,9 +61,7 @@ export default function PriceHistoryChart({
     })
   );
 
-  const prices = sorted.map((s) =>
-    typeof s.price === "number" ? s.price : null
-  );
+  const prices = sorted.map((s) => toNumberPrice(s.price));
 
   const hasAnyPrice = prices.some((p) => typeof p === "number");
 
@@ -84,7 +93,6 @@ export default function PriceHistoryChart({
         options={{
           responsive: true,
           maintainAspectRatio: false,
-          parsing: false,
           plugins: {
             legend: { display: false },
             tooltip: {
