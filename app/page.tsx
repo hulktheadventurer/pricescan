@@ -93,7 +93,6 @@ export default function HomePage() {
 
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        // ✅ clearer 401 UX
         if (res.status === 401) {
           toast.error("Please sign in to track products.");
           setShowSignIn(true);
@@ -125,6 +124,31 @@ export default function HomePage() {
     }, 50);
   }
 
+  // ✅ NEW: receive cross-tab "SIGNED_IN" and refresh products
+  useEffect(() => {
+    let bc: BroadcastChannel | null = null;
+
+    const refresh = () => {
+      // Do not assume user state is updated yet; the API will 401 if not ready
+      loadProductsViaApi({ silent: true });
+    };
+
+    try {
+      bc = new BroadcastChannel("pricescan-auth");
+      bc.onmessage = (msg) => {
+        if (msg?.data?.type === "SIGNED_IN") refresh();
+      };
+    } catch {}
+
+    window.addEventListener("pricescan-auth-signed-in", refresh as any);
+
+    return () => {
+      if (bc) bc.close();
+      window.removeEventListener("pricescan-auth-signed-in", refresh as any);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     let mounted = true;
 
@@ -143,12 +167,10 @@ export default function HomePage() {
         setUser(u2.user ?? null);
       }
 
-      // ✅ load products from server API
       await loadProductsViaApi({ silent: true });
 
       setBooting(false);
 
-      // ✅ don't block UI
       runPendingTrackInBackground();
     }
 
