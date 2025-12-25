@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { toast } from "sonner";
@@ -11,15 +11,6 @@ import {
   CurrencyCode,
   isSupportedCurrency,
 } from "@/lib/currency";
-
-function withTimeout<T>(p: Promise<T>, ms: number) {
-  return Promise.race<T>([
-    p,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error("timeout")), ms)
-    ),
-  ]);
-}
 
 export default function Header() {
   const supabase = useMemo(() => createClientComponentClient(), []);
@@ -32,23 +23,18 @@ export default function Header() {
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
 
-  const redirectTo =
-    process.env.NEXT_PUBLIC_SITE_URL
-      ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
-      : `${typeof window !== "undefined" ? window.location.origin : ""}/auth/callback`;
-
   useEffect(() => {
     let mounted = true;
 
     const load = async () => {
-      const { data } = await supabase.auth.getSession();
-      const u = data.session?.user ?? null;
+      const { data: userData } = await supabase.auth.getUser();
+      const u = userData?.user || null;
       if (!mounted) return;
 
       setUser(u);
 
       if (u) {
-        const { data: prof } = await supabase
+        const { data } = await supabase
           .from("user_profile")
           .select("currency")
           .eq("user_id", u.id)
@@ -56,12 +42,9 @@ export default function Header() {
 
         if (!mounted) return;
 
-        if (prof?.currency && isSupportedCurrency(prof.currency)) {
-          const c = prof.currency as CurrencyCode;
-          setCurrency(c);
-          window.dispatchEvent(
-            new CustomEvent("pricescan-currency-update", { detail: c })
-          );
+        if (data?.currency && isSupportedCurrency(data.currency)) {
+          setCurrency(data.currency as CurrencyCode);
+          broadcastCurrency(data.currency as CurrencyCode);
         }
       }
     };
@@ -80,6 +63,12 @@ export default function Header() {
     };
   }, [supabase]);
 
+  function broadcastCurrency(code: CurrencyCode) {
+    window.dispatchEvent(
+      new CustomEvent("pricescan-currency-update", { detail: code })
+    );
+  }
+
   async function persistCurrency(nextCurrency: CurrencyCode) {
     if (!user) return;
     await supabase.from("user_profile").upsert({
@@ -90,9 +79,7 @@ export default function Header() {
 
   async function handleCurrencyChange(code: CurrencyCode) {
     setCurrency(code);
-    window.dispatchEvent(
-      new CustomEvent("pricescan-currency-update", { detail: code })
-    );
+    broadcastCurrency(code);
     await persistCurrency(code);
   }
 
@@ -102,6 +89,11 @@ export default function Header() {
 
     setSending(true);
     try {
+      const redirectTo =
+        process.env.NEXT_PUBLIC_SITE_URL
+          ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
+          : `${window.location.origin}/auth/callback`;
+
       const { error } = await supabase.auth.signInWithOtp({
         email: e,
         options: { emailRedirectTo: redirectTo },
@@ -122,22 +114,23 @@ export default function Header() {
     if (signingOut) return;
     setSigningOut(true);
 
-    // clear UI immediately
-    setUser(null);
-    window.dispatchEvent(new CustomEvent("pricescan-signed-out"));
-    window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
-
     try {
-      await withTimeout(supabase.auth.signOut(), 2500);
-    } catch {
-      try {
-        // @ts-ignore
-        await supabase.auth.signOut({ scope: "local" });
-      } catch {}
-    } finally {
+      // ✅ IMPORTANT: server signout clears httpOnly cookies
+      const res = await fetch("/auth/signout", { method: "POST" });
+      if (!res.ok) throw new Error("Sign out failed");
+
+      // also tell pages to clear local state
+      window.dispatchEvent(new CustomEvent("pricescan-signed-out"));
+
       toast.success("Signed out.");
+
+      // hard reload to ensure UI is clean
       router.refresh();
-      window.location.replace("/");
+      window.location.assign("/");
+    } catch (err: any) {
+      console.error("Sign out failed:", err);
+      toast.error(err?.message || "Sign out failed.");
+      setSigningOut(false);
     }
   }
 
