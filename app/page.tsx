@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import ProductCard from "@/components/ProductCard";
 import { toast } from "sonner";
+import ProductCard from "@/components/ProductCard";
 
 function isAliExpressUrl(u: string) {
   return /aliexpress\./i.test(u);
@@ -16,8 +16,8 @@ export default function HomePage() {
 
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
-  const [booting, setBooting] = useState(true);
 
+  const [booting, setBooting] = useState(true);
   const [user, setUser] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
   const [lastLoadInfo, setLastLoadInfo] = useState<string>("");
@@ -27,10 +27,12 @@ export default function HomePage() {
     userRef.current = user;
   }, [user]);
 
+  // modal sign-in (old flow)
   const [showSignIn, setShowSignIn] = useState(false);
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
 
+  // ✅ canonical redirect (www)
   const redirectTo =
     process.env.NEXT_PUBLIC_SITE_URL
       ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
@@ -58,8 +60,8 @@ export default function HomePage() {
     }
 
     setProducts(data ?? []);
-    setLastLoadInfo(`loaded ${data?.length ?? 0} rows for ${forUser.id}`);
-    console.log("✅ loadProducts rows:", data?.length, data);
+    setLastLoadInfo(`loaded ${data?.length ?? 0} rows`);
+    console.log("✅ loaded rows:", data?.length, data);
   }
 
   async function trackUrl(input: string) {
@@ -86,7 +88,7 @@ export default function HomePage() {
       toast.success("Product added.");
       setUrl("");
 
-      // immediate reload
+      // ✅ immediately reload products
       await loadProducts(userRef.current);
     } catch (err: any) {
       toast.error(err?.message || "Something went wrong.");
@@ -101,15 +103,18 @@ export default function HomePage() {
     async function init() {
       setBooting(true);
 
+      // quick session
       const { data: s1 } = await supabase.auth.getSession();
       if (!mounted) return;
 
       const u1 = s1.session?.user ?? null;
       setUser(u1);
 
+      // fallback getUser
       if (!u1) {
         const { data: u2 } = await supabase.auth.getUser();
         if (!mounted) return;
+
         const u = u2.user ?? null;
         setUser(u);
         if (u) await loadProducts(u);
@@ -117,6 +122,7 @@ export default function HomePage() {
         await loadProducts(u1);
       }
 
+      // pending
       const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
       if ((u1 || userRef.current) && pending) {
         sessionStorage.removeItem(PENDING_TRACK_KEY);
@@ -183,6 +189,7 @@ export default function HomePage() {
         email: e,
         options: { emailRedirectTo: redirectTo },
       });
+
       if (error) throw error;
 
       toast.success("Magic link sent — check your email.");
@@ -212,6 +219,7 @@ export default function HomePage() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-10">
+      {/* SIGN IN MODAL */}
       {showSignIn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
@@ -260,7 +268,7 @@ export default function HomePage() {
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      {/* ✅ Debug line so we can see what the app thinks */}
+      {/* ✅ Always-visible state line */}
       <div className="text-xs text-gray-500 mb-6">
         {user ? `user=${user.id}` : "user=null"} • products={products.length} •{" "}
         {lastLoadInfo}
@@ -293,19 +301,24 @@ export default function HomePage() {
         <p className="text-gray-500 text-center">No items yet — track something!</p>
       ) : (
         <>
-          {/* ✅ RAW LIST (always works) */}
+          {/* ✅ RAW LIST - proves products are in state */}
           <div className="mb-6 rounded-xl border bg-white p-4">
-            <div className="font-semibold mb-2">Raw rows (debug)</div>
-            <div className="text-xs text-gray-700 space-y-1">
-              {products.slice(0, 10).map((p) => (
+            <div className="font-semibold mb-2">
+              Raw rows (should show immediately)
+            </div>
+            <div className="text-xs text-gray-700 space-y-2">
+              {products.slice(0, 20).map((p) => (
                 <div key={p.id} className="break-all">
-                  <b>{p.title || "No title"}</b> — {p.url}
+                  <div>
+                    <b>{p.title || "No title"}</b>
+                  </div>
+                  <div>{p.url}</div>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* ✅ Product cards */}
+          {/* Product cards (if ProductCard crashes, raw list still shows) */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {products.map((p) => (
               <ProductCard key={p.id} product={p} />
