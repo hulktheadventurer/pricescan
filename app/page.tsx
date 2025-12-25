@@ -16,20 +16,17 @@ export default function HomePage() {
 
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
-  const [user, setUser] = useState<any>(null);
-  const [products, setProducts] = useState<any[]>([]);
   const [booting, setBooting] = useState(true);
 
-  // ✅ Debug info from /api/debug
-  const [debug, setDebug] = useState<any>(null);
-  const [debugLoading, setDebugLoading] = useState(false);
+  const [user, setUser] = useState<any>(null);
+  const [products, setProducts] = useState<any[]>([]);
+  const [lastLoadInfo, setLastLoadInfo] = useState<string>("");
 
   const userRef = useRef<any>(null);
   useEffect(() => {
     userRef.current = user;
   }, [user]);
 
-  // ✅ Sign-in modal state
   const [showSignIn, setShowSignIn] = useState(false);
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
@@ -42,14 +39,13 @@ export default function HomePage() {
   async function loadProducts(forUser: any) {
     if (!forUser?.id) {
       setProducts([]);
+      setLastLoadInfo("no user");
       return;
     }
 
     const { data, error } = await supabase
       .from("tracked_products")
-      .select(
-        "id,user_id,url,created_at,title,merchant,locale,is_sold_out,is_ended,status_message"
-      )
+      .select("*")
       .eq("user_id", forUser.id)
       .order("created_at", { ascending: false });
 
@@ -57,24 +53,13 @@ export default function HomePage() {
       console.error("❌ loadProducts error:", error);
       toast.error(`loadProducts: ${error.message}`);
       setProducts([]);
+      setLastLoadInfo(`error: ${error.message}`);
       return;
     }
 
     setProducts(data ?? []);
-  }
-
-  async function fetchDebug() {
-    setDebugLoading(true);
-    try {
-      const res = await fetch("/api/debug", { cache: "no-store" });
-      const json = await res.json();
-      setDebug(json);
-      console.log("🔎 /api/debug:", json);
-    } catch (e: any) {
-      setDebug({ ok: false, error: e?.message || "debug_fetch_failed" });
-    } finally {
-      setDebugLoading(false);
-    }
+    setLastLoadInfo(`loaded ${data?.length ?? 0} rows for ${forUser.id}`);
+    console.log("✅ loadProducts rows:", data?.length, data);
   }
 
   async function trackUrl(input: string) {
@@ -101,7 +86,8 @@ export default function HomePage() {
       toast.success("Product added.");
       setUrl("");
 
-      window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
+      // immediate reload
+      await loadProducts(userRef.current);
     } catch (err: any) {
       toast.error(err?.message || "Something went wrong.");
     } finally {
@@ -109,7 +95,6 @@ export default function HomePage() {
     }
   }
 
-  // ✅ Session init + auth changes
   useEffect(() => {
     let mounted = true;
 
@@ -122,7 +107,6 @@ export default function HomePage() {
       const u1 = s1.session?.user ?? null;
       setUser(u1);
 
-      // If session still null, follow-up getUser (cookie hydration can lag)
       if (!u1) {
         const { data: u2 } = await supabase.auth.getUser();
         if (!mounted) return;
@@ -132,8 +116,6 @@ export default function HomePage() {
       } else {
         await loadProducts(u1);
       }
-
-      await fetchDebug();
 
       const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
       if ((u1 || userRef.current) && pending) {
@@ -155,7 +137,6 @@ export default function HomePage() {
       if (u) {
         setShowSignIn(false);
         await loadProducts(u);
-        await fetchDebug();
 
         const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
         if (pending) {
@@ -164,21 +145,13 @@ export default function HomePage() {
         }
       } else {
         setProducts([]);
-        await fetchDebug();
+        setLastLoadInfo("signed out");
       }
     });
-
-    const refresh = async () => {
-      await loadProducts(userRef.current);
-      await fetchDebug();
-    };
-
-    window.addEventListener("pricescan-products-refresh", refresh as any);
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
-      window.removeEventListener("pricescan-products-refresh", refresh as any);
     };
   }, [supabase]);
 
@@ -210,7 +183,6 @@ export default function HomePage() {
         email: e,
         options: { emailRedirectTo: redirectTo },
       });
-
       if (error) throw error;
 
       toast.success("Magic link sent — check your email.");
@@ -238,14 +210,8 @@ export default function HomePage() {
     await trackUrl(input);
   }
 
-  async function debugReload() {
-    await loadProducts(userRef.current);
-    await fetchDebug();
-  }
-
   return (
     <div className="max-w-6xl mx-auto px-4 py-10">
-      {/* SIGN IN MODAL */}
       {showSignIn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
@@ -290,29 +256,17 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* ✅ DEBUG PANEL */}
-      <div className="mb-6 rounded-xl border bg-white p-4 text-sm">
-        <div className="flex items-center justify-between gap-3">
-          <div className="font-semibold">Debug</div>
-          <button
-            onClick={debugReload}
-            className="text-xs text-gray-600 hover:underline"
-            disabled={debugLoading}
-          >
-            {debugLoading ? "Refreshing…" : "Refresh debug"}
-          </button>
-        </div>
-
-        <div className="mt-2 text-xs text-gray-700 whitespace-pre-wrap">
-          {debug ? JSON.stringify(debug, null, 2) : "No debug yet."}
-        </div>
-      </div>
-
-      <h1 className="text-3xl font-bold mb-6">
+      <h1 className="text-3xl font-bold mb-2">
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      <div className="flex gap-3 mb-4">
+      {/* ✅ Debug line so we can see what the app thinks */}
+      <div className="text-xs text-gray-500 mb-6">
+        {user ? `user=${user.id}` : "user=null"} • products={products.length} •{" "}
+        {lastLoadInfo}
+      </div>
+
+      <div className="flex gap-3 mb-10">
         <input
           type="text"
           value={url}
@@ -329,15 +283,6 @@ export default function HomePage() {
         </button>
       </div>
 
-      <div className="flex justify-end mb-10">
-        <button
-          onClick={debugReload}
-          className="text-xs text-gray-500 hover:underline"
-        >
-          Debug: Reload products
-        </button>
-      </div>
-
       {booting ? (
         <p className="text-gray-500 text-center">Loading…</p>
       ) : !user ? (
@@ -347,11 +292,26 @@ export default function HomePage() {
       ) : products.length === 0 ? (
         <p className="text-gray-500 text-center">No items yet — track something!</p>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {products.map((p) => (
-            <ProductCard key={p.id} product={p} />
-          ))}
-        </div>
+        <>
+          {/* ✅ RAW LIST (always works) */}
+          <div className="mb-6 rounded-xl border bg-white p-4">
+            <div className="font-semibold mb-2">Raw rows (debug)</div>
+            <div className="text-xs text-gray-700 space-y-1">
+              {products.slice(0, 10).map((p) => (
+                <div key={p.id} className="break-all">
+                  <b>{p.title || "No title"}</b> — {p.url}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ✅ Product cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {products.map((p) => (
+              <ProductCard key={p.id} product={p} />
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
