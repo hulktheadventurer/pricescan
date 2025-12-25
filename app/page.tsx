@@ -12,7 +12,6 @@ function isAliExpressUrl(u: string) {
 const PENDING_TRACK_KEY = "pricescan_pending_track_url";
 
 export default function HomePage() {
-  // ✅ stable client (do NOT recreate every render)
   const supabase = useMemo(() => createClientComponentClient(), []);
 
   const [url, setUrl] = useState("");
@@ -20,7 +19,6 @@ export default function HomePage() {
   const [user, setUser] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
 
-  // ✅ avoid stale user closures
   const userRef = useRef<any>(null);
   useEffect(() => {
     userRef.current = user;
@@ -31,13 +29,17 @@ export default function HomePage() {
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
 
+  const redirectTo =
+    process.env.NEXT_PUBLIC_SITE_URL
+      ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
+      : `${window.location.origin}/auth/callback`;
+
   async function loadProducts(forUser: any) {
     if (!forUser?.id) {
       setProducts([]);
       return;
     }
 
-    // ✅ IMPORTANT: filter by user_id (otherwise RLS often returns empty)
     const { data, error } = await supabase
       .from("tracked_products")
       .select("*")
@@ -77,8 +79,6 @@ export default function HomePage() {
 
       toast.success("Product added.");
       setUrl("");
-
-      // ✅ trigger reload of products
       window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
     } catch (err: any) {
       toast.error(err?.message || "Something went wrong.");
@@ -87,14 +87,13 @@ export default function HomePage() {
     }
   }
 
-  // ✅ session + auth changes (RUN ONCE)
+  // ✅ session + auth changes (run once)
   useEffect(() => {
     let mounted = true;
 
     async function init() {
       const { data, error } = await supabase.auth.getSession();
       if (!mounted) return;
-
       if (error) console.error("getSession error:", error);
 
       const u = data.session?.user ?? null;
@@ -103,7 +102,6 @@ export default function HomePage() {
       if (u) {
         await loadProducts(u);
 
-        // ✅ auto-track if pending exists
         const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
         if (pending) {
           sessionStorage.removeItem(PENDING_TRACK_KEY);
@@ -136,7 +134,6 @@ export default function HomePage() {
       }
     });
 
-    // ✅ refresh handler uses latest user from ref (no stale closure)
     const refresh = async () => {
       await loadProducts(userRef.current);
     };
@@ -150,14 +147,12 @@ export default function HomePage() {
     };
   }, [supabase]);
 
-  // ✅ allow header "Sign in" to open modal too
   useEffect(() => {
     const open = () => setShowSignIn(true);
     window.addEventListener("pricescan-open-signin", open as any);
     return () => window.removeEventListener("pricescan-open-signin", open as any);
   }, []);
 
-  // ✅ instant clear when header signs out
   useEffect(() => {
     const onSignedOut = () => {
       setUser(null);
@@ -176,8 +171,6 @@ export default function HomePage() {
 
     setSending(true);
     try {
-      const redirectTo = `${window.location.origin}/auth/callback`;
-
       const { error } = await supabase.auth.signInWithOtp({
         email: e,
         options: { emailRedirectTo: redirectTo },
@@ -201,7 +194,6 @@ export default function HomePage() {
       return;
     }
 
-    // if not logged in, open modal + remember pending url
     if (!userRef.current) {
       sessionStorage.setItem(PENDING_TRACK_KEY, input);
       setShowSignIn(true);
@@ -213,7 +205,6 @@ export default function HomePage() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-10">
-      {/* ✅ SIGN-IN MODAL */}
       {showSignIn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div

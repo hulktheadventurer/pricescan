@@ -32,6 +32,11 @@ export default function Header() {
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
 
+  const redirectTo =
+    process.env.NEXT_PUBLIC_SITE_URL
+      ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
+      : `${window.location.origin}/auth/callback`;
+
   useEffect(() => {
     let mounted = true;
 
@@ -97,11 +102,11 @@ export default function Header() {
 
     setSending(true);
     try {
-      const redirectTo = `${window.location.origin}/auth/callback`;
       const { error } = await supabase.auth.signInWithOtp({
         email: e,
         options: { emailRedirectTo: redirectTo },
       });
+
       if (error) throw error;
 
       toast.success("Magic link sent — check your email.");
@@ -117,28 +122,23 @@ export default function Header() {
     if (signingOut) return;
     setSigningOut(true);
 
-    // ✅ immediately clear UI + tell the app
+    // ✅ immediately clear UI
     setUser(null);
     window.dispatchEvent(new CustomEvent("pricescan-signed-out"));
     window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
 
-    // ✅ attempt remote signout but DON'T let it hang forever
+    // ✅ don't let remote signout hang forever
     try {
       await withTimeout(supabase.auth.signOut(), 2500);
-    } catch (e: any) {
-      // ✅ fallback: force local signout (no network)
+    } catch {
       try {
-        // supabase-js supports scope in v2
         // @ts-ignore
         await supabase.auth.signOut({ scope: "local" });
       } catch {}
     } finally {
       toast.success("Signed out.");
-
-      // ✅ HARD reset (no router/hydration weirdness)
-      window.location.replace("/");
-      // also refresh Next cache in case browser blocks replace for some reason
       router.refresh();
+      window.location.replace("/");
     }
   }
 
