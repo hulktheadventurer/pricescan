@@ -27,7 +27,15 @@ export default function HomePage() {
     userRef.current = user;
   }, [user]);
 
+  // ✅ sign-in modal (restore)
   const [showSignIn, setShowSignIn] = useState(false);
+  const [email, setEmail] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const redirectTo =
+    process.env.NEXT_PUBLIC_SITE_URL
+      ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
+      : `${typeof window !== "undefined" ? window.location.origin : ""}/auth/callback`;
 
   async function loadProductsViaApi() {
     try {
@@ -73,7 +81,6 @@ export default function HomePage() {
       toast.success("Product added.");
       setUrl("");
 
-      // reload after track
       await loadProductsViaApi();
     } catch (err: any) {
       toast.error(err?.message || "Something went wrong.");
@@ -100,7 +107,6 @@ export default function HomePage() {
     async function init() {
       setBooting(true);
 
-      // load user (for UI only)
       const { data: s1 } = await supabase.auth.getSession();
       if (!mounted) return;
       const u1 = s1.session?.user ?? null;
@@ -112,12 +118,10 @@ export default function HomePage() {
         setUser(u2.user ?? null);
       }
 
-      // ✅ load products via server API (reliable)
       await loadProductsViaApi();
 
       setBooting(false);
 
-      // ✅ don’t block UI
       runPendingTrackInBackground();
     }
 
@@ -135,7 +139,7 @@ export default function HomePage() {
         runPendingTrackInBackground();
       } else {
         setProducts([]);
-        setLastLoadInfo("signed out");
+        setLastLoadInfo("not signed in");
         sessionStorage.removeItem(PENDING_TRACK_KEY);
         setBooting(false);
       }
@@ -160,11 +164,34 @@ export default function HomePage() {
       setShowSignIn(false);
       sessionStorage.removeItem(PENDING_TRACK_KEY);
       setBooting(false);
+      setLastLoadInfo("not signed in");
     };
     window.addEventListener("pricescan-signed-out", onSignedOut as any);
     return () =>
       window.removeEventListener("pricescan-signed-out", onSignedOut as any);
   }, []);
+
+  async function sendMagicLink() {
+    const e = email.trim().toLowerCase();
+    if (!e) return toast.error("Enter your email.");
+
+    setSending(true);
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email: e,
+        options: { emailRedirectTo: redirectTo },
+      });
+
+      if (error) throw error;
+
+      toast.success("Magic link sent — check your email.");
+      setEmail("");
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to send magic link.");
+    } finally {
+      setSending(false);
+    }
+  }
 
   async function handleTrack() {
     const input = url.trim();
@@ -174,6 +201,8 @@ export default function HomePage() {
     }
 
     if (!userRef.current) {
+      // ✅ show feedback + modal (so it doesn't look frozen)
+      toast.error("Please sign in to track products.");
       sessionStorage.setItem(PENDING_TRACK_KEY, input);
       setShowSignIn(true);
       return;
@@ -184,7 +213,50 @@ export default function HomePage() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-10">
-      {/* keep your existing modal if you want; leaving showSignIn unused here is fine */}
+      {/* ✅ SIGN-IN MODAL (RESTORED) */}
+      {showSignIn && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setShowSignIn(false)}
+          />
+          <div className="relative bg-white w-[92%] max-w-md rounded-2xl shadow-xl border p-6">
+            <div className="text-xl font-semibold mb-2">Sign in to PriceScan</div>
+            <div className="text-sm text-gray-600 mb-4">
+              Enter your email and we’ll send you a magic link.
+            </div>
+
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Enter email to sign in"
+              className="w-full border rounded px-3 py-2 mb-3"
+              autoFocus
+            />
+
+            <div className="flex gap-3">
+              <button
+                onClick={sendMagicLink}
+                disabled={sending}
+                className="flex-1 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-60"
+              >
+                {sending ? "Sending…" : "Send magic link"}
+              </button>
+              <button
+                onClick={() => setShowSignIn(false)}
+                className="flex-1 bg-gray-200 px-4 py-2 rounded hover:bg-gray-300"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="text-xs text-gray-500 mt-3">
+              After clicking the link in your email, you’ll be signed in here.
+            </div>
+          </div>
+        </div>
+      )}
 
       <h1 className="text-3xl font-bold mb-2">
         🔎 PriceScan — Track Product Prices
