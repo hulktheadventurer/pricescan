@@ -44,10 +44,11 @@ export default function HomePage() {
     userRef.current = user;
   }, [user]);
 
+  // ✅ IMPORTANT: redirect to /auth/finish (NOT /auth/callback)
   const redirectTo =
     process.env.NEXT_PUBLIC_SITE_URL
-      ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
-      : `${typeof window !== "undefined" ? window.location.origin : ""}/auth/callback`;
+      ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/finish`
+      : `${typeof window !== "undefined" ? window.location.origin : ""}/auth/finish`;
 
   async function loadProductsViaApi({ silent }: { silent?: boolean } = {}) {
     if (!silent) setRefreshing(true);
@@ -124,12 +125,11 @@ export default function HomePage() {
     }, 50);
   }
 
-  // ✅ NEW: receive cross-tab "SIGNED_IN" and refresh products
+  // ✅ Cross-tab refresh: listen for SIGNED_IN broadcast
   useEffect(() => {
     let bc: BroadcastChannel | null = null;
 
     const refresh = () => {
-      // Do not assume user state is updated yet; the API will 401 if not ready
       loadProductsViaApi({ silent: true });
     };
 
