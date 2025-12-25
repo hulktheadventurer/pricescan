@@ -3,7 +3,11 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import { CurrencyCode, convertCurrency, isSupportedCurrency } from "@/lib/currency";
+import {
+  CurrencyCode,
+  convertCurrency,
+  isSupportedCurrency,
+} from "@/lib/currency";
 
 type TrackedProduct = {
   id: string;
@@ -23,8 +27,25 @@ type SnapshotRow = {
   currency?: string | null;
 };
 
+// ✅ Affiliate env (client-side must be NEXT_PUBLIC_*)
 const AMAZON_TAG = process.env.NEXT_PUBLIC_AMAZON_TAG || "theforbiddens-21";
 const ALI_PREFIX = (process.env.NEXT_PUBLIC_ALI_DEEPLINK_PREFIX || "").trim();
+
+// ✅ eBay EPN params (NEXT_PUBLIC required for client)
+// Support multiple naming styles just in case you had older ones
+const EBAY_CAMPID = (
+  process.env.NEXT_PUBLIC_EBAY_CAMPID ||
+  process.env.NEXT_PUBLIC_EBAY_CAMPAIGN_ID ||
+  ""
+).trim();
+
+const EBAY_TOOLID = (process.env.NEXT_PUBLIC_EBAY_TOOLID || "10001").trim();
+
+const EBAY_CUSTOMID = (
+  process.env.NEXT_PUBLIC_EBAY_CUSTOMID ||
+  process.env.NEXT_PUBLIC_EBAY_CUSTOM_ID ||
+  ""
+).trim();
 
 function buildAmazonSearchUrl(title: string | null | undefined) {
   const q = (title || "").trim();
@@ -59,6 +80,35 @@ function fmt(amount: number, currency: CurrencyCode) {
   }
 }
 
+// ✅ Add EPN params to eBay URLs so "View" click can earn commission
+function buildEbayAffiliateUrl(rawUrl: string, merchant?: string | null) {
+  if (!rawUrl) return rawUrl;
+
+  const m = (merchant || "").toLowerCase();
+  const isEbay =
+    m.includes("ebay") || /(^|\.)ebay\./i.test(rawUrl);
+
+  // If not eBay or missing campid, just return original
+  if (!isEbay || !EBAY_CAMPID) return rawUrl;
+
+  try {
+    const u = new URL(rawUrl);
+
+    // Do not overwrite existing values if user already has them
+    if (!u.searchParams.get("campid")) u.searchParams.set("campid", EBAY_CAMPID);
+    if (EBAY_TOOLID && !u.searchParams.get("toolid"))
+      u.searchParams.set("toolid", EBAY_TOOLID);
+
+    if (EBAY_CUSTOMID && !u.searchParams.get("customid"))
+      u.searchParams.set("customid", EBAY_CUSTOMID);
+
+    return u.toString();
+  } catch {
+    // If URL parsing fails, fallback original
+    return rawUrl;
+  }
+}
+
 export default function ProductCard({ product }: { product: TrackedProduct }) {
   const supabase = createClientComponentClient();
 
@@ -69,8 +119,19 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
   const [latestSeenAt, setLatestSeenAt] = useState<string | null>(null);
   const [latestCurrency, setLatestCurrency] = useState<CurrencyCode>("GBP");
 
-  const amazonUrl = useMemo(() => buildAmazonSearchUrl(product?.title), [product?.title]);
-  const aliUrl = useMemo(() => buildAliExpressSearchUrl(product?.title), [product?.title]);
+  const amazonUrl = useMemo(
+    () => buildAmazonSearchUrl(product?.title),
+    [product?.title]
+  );
+  const aliUrl = useMemo(
+    () => buildAliExpressSearchUrl(product?.title),
+    [product?.title]
+  );
+
+  const viewUrl = useMemo(() => {
+    if (!product?.url) return "";
+    return buildEbayAffiliateUrl(product.url, product.merchant);
+  }, [product?.url, product?.merchant]);
 
   useEffect(() => {
     const handler = (e: any) => {
@@ -137,7 +198,10 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     if (!product?.id) return;
     setBusy(true);
     try {
-      const { error } = await supabase.from("tracked_products").delete().eq("id", product.id);
+      const { error } = await supabase
+        .from("tracked_products")
+        .delete()
+        .eq("id", product.id);
       if (error) throw error;
       window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
     } catch (e) {
@@ -149,7 +213,8 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
   }
 
   function handleView() {
-    if (product.url) window.open(product.url, "_blank", "noopener,noreferrer");
+    const target = viewUrl || product.url;
+    if (target) window.open(target, "_blank", "noopener,noreferrer");
   }
   function handleAmazon() {
     window.open(amazonUrl, "_blank", "noopener,noreferrer");
