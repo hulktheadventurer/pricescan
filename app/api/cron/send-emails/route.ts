@@ -7,7 +7,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
-// ✅ FIX: support ALERT_FROM as fallback (your Vercel env var name)
 const EMAIL_FROM =
   process.env.EMAIL_FROM ||
   process.env.ALERT_FROM ||
@@ -16,7 +15,7 @@ const EMAIL_FROM =
 async function sendEmail(to: string, subject: string, html: string) {
   if (!RESEND_API_KEY) {
     console.warn("⚠️ RESEND_API_KEY NOT SET — skipping email send");
-    return { ok: false, error: "missing_resend_api_key" as const };
+    return { ok: false, status: 0, error: "missing_resend_api_key" as const, details: "" };
   }
 
   const res = await fetch("https://api.resend.com/emails", {
@@ -32,11 +31,16 @@ async function sendEmail(to: string, subject: string, html: string) {
 
   if (!res.ok) {
     console.error("❌ Resend send failed:", res.status, text);
-    return { ok: false, error: `resend_failed_${res.status}` as const, details: text };
+    return {
+      ok: false,
+      status: res.status,
+      error: `resend_failed_${res.status}` as const,
+      details: text,
+    };
   }
 
   console.log("✅ Email sent to:", to);
-  return { ok: true as const, details: text };
+  return { ok: true as const, status: res.status, details: text };
 }
 
 /* -------------------- PRICE DROP EMAIL -------------------- */
@@ -54,12 +58,8 @@ function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
 
     <p>
       Previous low: <b>${item.currency || ""} ${Number(oldPrice).toFixed(2)}</b><br/>
-      New price: <b style="color:#16a34a;">${item.currency || ""} ${Number(newPrice).toFixed(
-        2
-      )}</b><br/>
-      Difference: <b>${item.currency || ""} ${Number(diff).toFixed(
-        2
-      )} (-${pct.toFixed(1)}%)</b>
+      New price: <b style="color:#16a34a;">${item.currency || ""} ${Number(newPrice).toFixed(2)}</b><br/>
+      Difference: <b>${item.currency || ""} ${Number(diff).toFixed(2)} (-${pct.toFixed(1)}%)</b>
     </p>
 
     <a href="${affiliateUrl}"
@@ -100,17 +100,17 @@ function buildRestockEmail(item: any) {
 }
 
 function escapeHtml(str: string) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 /* -------------------- MAIN CRON -------------------- */
-export async function GET() {
+export async function GET(req: Request) {
   const startedAt = new Date().toISOString();
+  const url = new URL(req.url);
+  const debug = url.searchParams.get("debug") === "1";
 
-  // 1) Get pending alerts
+  const failures: Array<any> = [];
+
   const { data: alerts, error: alertErr } = await supabaseAdmin
     .from("cron_alert_queue")
     .select("*")
@@ -119,12 +119,11 @@ export async function GET() {
     .limit(50);
 
   if (alertErr) {
-    console.error("❌ Failed to fetch cron_alert_queue:", alertErr);
     return NextResponse.json({ ok: false, startedAt, error: alertErr.message }, { status: 500 });
   }
 
   if (!alerts?.length) {
-    return NextResponse.json({ ok: true, startedAt, processed: 0, note: "no_pending_alerts" });
+    return NextResponse.json({ ok: true, startedAt, processed: 0, emailed: 0, skipped: 0, note: "no_pending_alerts" });
   }
 
   let processed = 0;
@@ -132,8 +131,12 @@ export async function GET() {
   let skipped = 0;
 
   for (const alert of alerts) {
+    const fail = (reason: string, extra: any = {}) => {
+      skipped++;
+      if (debug) failures.push({ alert_id: alert.id, type: alert.type, reason, ...extra });
+    };
+
     try {
-      // Product lookup
       const { data: product, error: prodErr } = await supabaseAdmin
         .from("tracked_products")
         .select("id, title, url, user_id, status, sku, merchant")
@@ -141,73 +144,71 @@ export async function GET() {
         .maybeSingle();
 
       if (prodErr || !product) {
-        console.error("❌ Product lookup failed:", prodErr?.message);
-        skipped++;
+        fail("product_lookup_failed", { prodErr: prodErr?.message });
         continue;
       }
 
-      // ✅ Correct user lookup via Admin API
-      const { data: userRes, error: userErr } = await supabaseAdmin.auth.admin.getUserById(
-        product.user_id
-      );
+      const { data: userRes, error: userErr } = await supabaseAdmin.auth.admin.getUserById(product.user_id);
 
       if (userErr) {
-        console.error("❌ getUserById failed:", userErr);
-        skipped++;
+        fail("getUserById_failed", { userErr: String(userErr) });
         continue;
       }
 
       const email = userRes?.user?.email;
       if (!email) {
-        console.error("❌ user has no email:", product.user_id);
-        skipped++;
+        fail("user_missing_email", { user_id: product.user_id });
         continue;
       }
 
-      // Build + send
       let sendRes: any = null;
 
       if (alert.type === "PRICE_DROP") {
-        // Use old_price/new_price if present (your table has these)
         const oldP = Number(alert.old_price ?? NaN);
         const newP = Number(alert.new_price ?? NaN);
-
         if (!isFinite(oldP) || !isFinite(newP)) {
-          console.warn("⚠️ PRICE_DROP alert missing old/new price, skipping:", alert.id);
-          skipped++;
+          fail("price_drop_missing_old_new", { old_price: alert.old_price, new_price: alert.new_price });
           continue;
         }
-
         sendRes = await sendEmail(
           email,
           `📉 Price dropped: ${product.title || "Tracked item"}`,
           buildPriceDropEmail(product, oldP, newP)
         );
-      }
-
-      if (alert.type === "RESTOCK") {
+      } else if (alert.type === "RESTOCK") {
         sendRes = await sendEmail(
           email,
           `🔔 Back in stock: ${product.title || "Tracked item"}`,
           buildRestockEmail(product)
         );
+      } else {
+        fail("unknown_alert_type", { got: alert.type });
+        continue;
       }
 
-      // Only mark processed if email actually succeeded
       if (sendRes?.ok) {
         await supabaseAdmin.from("cron_alert_queue").update({ processed: true }).eq("id", alert.id);
         processed++;
         emailed++;
       } else {
-        // optional: count these as skipped so the JSON reflects reality
-        skipped++;
-        console.error("❌ Email not sent; leaving alert unprocessed:", alert.id, sendRes?.error);
+        fail("email_send_failed", {
+          from: EMAIL_FROM,
+          resend_status: sendRes?.status,
+          resend_error: sendRes?.error,
+          resend_details: sendRes?.details,
+        });
       }
-    } catch (err) {
-      skipped++;
-      console.error("❌ Email processing error:", err);
+    } catch (err: any) {
+      fail("unexpected_exception", { message: err?.message || String(err) });
     }
   }
 
-  return NextResponse.json({ ok: true, startedAt, processed, emailed, skipped });
+  return NextResponse.json({
+    ok: true,
+    startedAt,
+    processed,
+    emailed,
+    skipped,
+    ...(debug ? { failures } : {}),
+  });
 }
