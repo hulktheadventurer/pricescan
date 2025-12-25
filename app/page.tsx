@@ -20,6 +20,10 @@ export default function HomePage() {
   const [products, setProducts] = useState<any[]>([]);
   const [booting, setBooting] = useState(true);
 
+  // ✅ Debug info from /api/debug
+  const [debug, setDebug] = useState<any>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
+
   const userRef = useRef<any>(null);
   useEffect(() => {
     userRef.current = user;
@@ -56,8 +60,21 @@ export default function HomePage() {
       return;
     }
 
-    console.log("✅ loadProducts rows:", data?.length, data);
     setProducts(data ?? []);
+  }
+
+  async function fetchDebug() {
+    setDebugLoading(true);
+    try {
+      const res = await fetch("/api/debug", { cache: "no-store" });
+      const json = await res.json();
+      setDebug(json);
+      console.log("🔎 /api/debug:", json);
+    } catch (e: any) {
+      setDebug({ ok: false, error: e?.message || "debug_fetch_failed" });
+    } finally {
+      setDebugLoading(false);
+    }
   }
 
   async function trackUrl(input: string) {
@@ -84,7 +101,6 @@ export default function HomePage() {
       toast.success("Product added.");
       setUrl("");
 
-      // reload products after tracking
       window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
     } catch (err: any) {
       toast.error(err?.message || "Something went wrong.");
@@ -100,14 +116,13 @@ export default function HomePage() {
     async function init() {
       setBooting(true);
 
-      // 1) getSession (fast)
       const { data: s1 } = await supabase.auth.getSession();
       if (!mounted) return;
 
       const u1 = s1.session?.user ?? null;
       setUser(u1);
 
-      // 2) If session is still null, do a follow-up getUser() (sometimes cookie hydration lags)
+      // If session still null, follow-up getUser (cookie hydration can lag)
       if (!u1) {
         const { data: u2 } = await supabase.auth.getUser();
         if (!mounted) return;
@@ -118,7 +133,8 @@ export default function HomePage() {
         await loadProducts(u1);
       }
 
-      // pending auto-track
+      await fetchDebug();
+
       const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
       if ((u1 || userRef.current) && pending) {
         sessionStorage.removeItem(PENDING_TRACK_KEY);
@@ -139,6 +155,7 @@ export default function HomePage() {
       if (u) {
         setShowSignIn(false);
         await loadProducts(u);
+        await fetchDebug();
 
         const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
         if (pending) {
@@ -147,11 +164,13 @@ export default function HomePage() {
         }
       } else {
         setProducts([]);
+        await fetchDebug();
       }
     });
 
     const refresh = async () => {
       await loadProducts(userRef.current);
+      await fetchDebug();
     };
 
     window.addEventListener("pricescan-products-refresh", refresh as any);
@@ -163,14 +182,12 @@ export default function HomePage() {
     };
   }, [supabase]);
 
-  // header can open modal
   useEffect(() => {
     const open = () => setShowSignIn(true);
     window.addEventListener("pricescan-open-signin", open as any);
     return () => window.removeEventListener("pricescan-open-signin", open as any);
   }, []);
 
-  // clear instantly when signed out
   useEffect(() => {
     const onSignedOut = () => {
       setUser(null);
@@ -222,9 +239,8 @@ export default function HomePage() {
   }
 
   async function debugReload() {
-    const u = userRef.current;
-    console.log("🔧 debugReload user:", u);
-    await loadProducts(u);
+    await loadProducts(userRef.current);
+    await fetchDebug();
   }
 
   return (
@@ -274,7 +290,23 @@ export default function HomePage() {
         </div>
       )}
 
-      <div className="mb-8" />
+      {/* ✅ DEBUG PANEL */}
+      <div className="mb-6 rounded-xl border bg-white p-4 text-sm">
+        <div className="flex items-center justify-between gap-3">
+          <div className="font-semibold">Debug</div>
+          <button
+            onClick={debugReload}
+            className="text-xs text-gray-600 hover:underline"
+            disabled={debugLoading}
+          >
+            {debugLoading ? "Refreshing…" : "Refresh debug"}
+          </button>
+        </div>
+
+        <div className="mt-2 text-xs text-gray-700 whitespace-pre-wrap">
+          {debug ? JSON.stringify(debug, null, 2) : "No debug yet."}
+        </div>
+      </div>
 
       <h1 className="text-3xl font-bold mb-6">
         🔎 PriceScan — Track Product Prices
@@ -297,7 +329,6 @@ export default function HomePage() {
         </button>
       </div>
 
-      {/* ✅ DEBUG BUTTON (TEMP) */}
       <div className="flex justify-end mb-10">
         <button
           onClick={debugReload}
