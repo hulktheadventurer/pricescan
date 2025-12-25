@@ -1,11 +1,9 @@
-// app/api/cron/send-emails/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseServer";
 import { getEbayAffiliateLink } from "@/lib/affiliates/ebay";
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY!;
-const EMAIL_FROM =
-  process.env.EMAIL_FROM || "PriceScan <alerts@pricescan.ai>";
+const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const EMAIL_FROM = process.env.EMAIL_FROM || "PriceScan <alerts@pricescan.ai>";
 
 async function sendEmail(to: string, subject: string, html: string) {
   if (!RESEND_API_KEY) {
@@ -13,7 +11,7 @@ async function sendEmail(to: string, subject: string, html: string) {
     return;
   }
 
-  await fetch("https://api.resend.com/emails", {
+  const r = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${RESEND_API_KEY}`,
@@ -21,12 +19,16 @@ async function sendEmail(to: string, subject: string, html: string) {
     },
     body: JSON.stringify({ from: EMAIL_FROM, to, subject, html }),
   });
+
+  if (!r.ok) {
+    console.error("❌ Resend failed:", await r.text());
+  }
 }
 
 /* -------------------- PRICE DROP EMAIL -------------------- */
 function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
   const diff = oldPrice - newPrice;
-  const pct = (diff / oldPrice) * 100;
+  const pct = oldPrice > 0 ? (diff / oldPrice) * 100 : 0;
   const affiliateUrl = getEbayAffiliateLink(item.url);
 
   return `
@@ -34,12 +36,12 @@ function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
     <h2>📉 Price dropped!</h2>
     <p>Your tracked item just hit a new low:</p>
 
-    <h3>${escape(item.title)}</h3>
+    <h3>${escapeHtml(item.title || "Tracked item")}</h3>
 
     <p>
-      Previous low: <b>${item.currency} ${oldPrice.toFixed(2)}</b><br/>
-      New price: <b style="color:#16a34a;">${item.currency} ${newPrice.toFixed(2)}</b><br/>
-      Difference: <b>${item.currency} ${diff.toFixed(2)} (-${pct.toFixed(1)}%)</b>
+      Previous low: <b>${item.currency || ""} ${oldPrice.toFixed(2)}</b><br/>
+      New price: <b style="color:#16a34a;">${item.currency || ""} ${newPrice.toFixed(2)}</b><br/>
+      Difference: <b>${item.currency || ""} ${diff.toFixed(2)} (-${pct.toFixed(1)}%)</b>
     </p>
 
     <a href="${affiliateUrl}"
@@ -63,7 +65,7 @@ function buildRestockEmail(item: any) {
     <h2>🔔 Back in stock!</h2>
     <p>Your tracked item is available again:</p>
 
-    <h3>${escape(item.title)}</h3>
+    <h3>${escapeHtml(item.title || "Tracked item")}</h3>
 
     <p>It was previously sold out, but it's now ACTIVE again.</p>
 
@@ -79,12 +81,12 @@ function buildRestockEmail(item: any) {
   </div>`;
 }
 
-/* -------------------- HTML Escape -------------------- */
-function escape(str: string) {
-  return str
+function escapeHtml(str: string) {
+  return String(str)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 /* -------------------- MAIN CRON -------------------- */
@@ -101,71 +103,79 @@ export async function GET() {
 
   if (alertErr) {
     console.error("❌ Failed to fetch cron_alert_queue:", alertErr);
-    return NextResponse.json({ ok: false });
+    return NextResponse.json({ ok: false, startedAt, error: alertErr.message }, { status: 500 });
   }
 
-  if (!alerts?.length)
-    return NextResponse.json({ ok: true, startedAt, processed: 0 });
+  if (!alerts?.length) return NextResponse.json({ ok: true, startedAt, processed: 0 });
 
   let processed = 0;
 
   for (const alert of alerts) {
     try {
-      /* -------------------- PRODUCT LOOKUP -------------------- */
-      const { data: product } = await supabaseAdmin
+      // 2) Product lookup
+      const { data: product, error: prodErr } = await supabaseAdmin
         .from("tracked_products")
-        .select("id, title, url, user_id, status, sku")
+        .select("id, title, url, user_id")
         .eq("id", alert.product_id)
-        .single();
+        .maybeSingle();
 
-      // TS Fix: If product missing → skip
-      if (!product) continue;
-
-      /* -------------------- USER LOOKUP -------------------- */
-      const { data: user, error: userErr } = await supabaseAdmin
-        .from("auth.users")
-        .select("email")
-        .eq("id", product.user_id)
-        .single();
-
-      if (userErr || !user?.email) continue;
-
-      /* -------------------- PRICE DROP -------------------- */
-      if (alert.type === "PRICE_DROP") {
-        const { data: snaps } = await supabaseAdmin
-          .from("price_snapshots")
-          .select("price, currency")
-          .eq("product_id", product.id)
-          .order("seen_at", { ascending: false });
-
-        if (!snaps || snaps.length < 2) continue;
-
-        const latest = snaps[0].price;
-        const previousLow = Math.min(...snaps.slice(1).map((s) => s.price));
-
-        if (latest < previousLow) {
-          await sendEmail(
-            user.email,
-            `📉 Price dropped: ${product.title}`,
-            buildPriceDropEmail(product, previousLow, latest)
-          );
-        }
+      if (prodErr || !product) {
+        console.error("❌ Product lookup failed:", prodErr);
+        continue;
       }
 
-      /* -------------------- RESTOCK -------------------- */
+      // 3) User email via Supabase Admin API (reliable)
+      const { data: userData, error: userErr } = await supabaseAdmin.auth.admin.getUserById(
+        product.user_id
+      );
+
+      const email = userData?.user?.email || "";
+      if (userErr || !email) {
+        console.error("❌ User lookup failed:", userErr);
+        continue;
+      }
+
+      // 4) Send based on type
+      if (alert.type === "PRICE_DROP") {
+        // Prefer stored old/new prices from queue
+        let oldPrice = Number(alert.old_price);
+        let newPrice = Number(alert.new_price);
+
+        // Fallback: calculate from snapshots if missing
+        if (!isFinite(oldPrice) || !isFinite(newPrice)) {
+          const { data: snaps } = await supabaseAdmin
+            .from("price_snapshots")
+            .select("price, currency")
+            .eq("product_id", product.id)
+            .order("seen_at", { ascending: false });
+
+          if (!snaps || snaps.length < 2) continue;
+
+          newPrice = Number(snaps[0].price);
+          oldPrice = Math.min(...snaps.slice(1).map((s: any) => Number(s.price)));
+        }
+
+        await sendEmail(
+          email,
+          `📉 Price dropped: ${product.title || "Tracked item"}`,
+          buildPriceDropEmail(
+            { ...product, currency: "GBP" },
+            oldPrice,
+            newPrice
+          )
+        );
+      }
+
       if (alert.type === "RESTOCK") {
         await sendEmail(
-          user.email,
-          `🔔 Back in stock: ${product.title}`,
+          email,
+          `🔔 Back in stock: ${product.title || "Tracked item"}`,
           buildRestockEmail(product)
         );
       }
 
-      /* -------------------- MARK AS PROCESSED -------------------- */
-      await supabaseAdmin
-        .from("cron_alert_queue")
-        .update({ processed: true })
-        .eq("id", alert.id);
+      // 5) Mark processed
+      await supabaseAdmin.from("cron_alert_queue").update({ processed: true }).eq("id", alert.id);
 
       processed++;
     } catch (err) {
