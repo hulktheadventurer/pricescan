@@ -27,12 +27,11 @@ export default function HomePage() {
     userRef.current = user;
   }, [user]);
 
-  // modal sign-in (old flow)
+  // modal sign-in
   const [showSignIn, setShowSignIn] = useState(false);
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
 
-  // ✅ canonical redirect (www)
   const redirectTo =
     process.env.NEXT_PUBLIC_SITE_URL
       ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
@@ -61,7 +60,6 @@ export default function HomePage() {
 
     setProducts(data ?? []);
     setLastLoadInfo(`loaded ${data?.length ?? 0} rows`);
-    console.log("✅ loaded rows:", data?.length, data);
   }
 
   async function trackUrl(input: string) {
@@ -88,7 +86,7 @@ export default function HomePage() {
       toast.success("Product added.");
       setUrl("");
 
-      // ✅ immediately reload products
+      // reload after track
       await loadProducts(userRef.current);
     } catch (err: any) {
       toast.error(err?.message || "Something went wrong.");
@@ -97,39 +95,56 @@ export default function HomePage() {
     }
   }
 
+  // ✅ run pending auto-track WITHOUT blocking UI
+  function runPendingTrackInBackground() {
+    const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
+    if (!pending) return;
+
+    sessionStorage.removeItem(PENDING_TRACK_KEY);
+
+    // run after first paint
+    setTimeout(() => {
+      // if user disappeared (signed out), don’t track
+      if (!userRef.current) return;
+      trackUrl(pending);
+    }, 50);
+  }
+
   useEffect(() => {
     let mounted = true;
 
     async function init() {
       setBooting(true);
 
-      // quick session
+      // get session fast
       const { data: s1 } = await supabase.auth.getSession();
       if (!mounted) return;
 
       const u1 = s1.session?.user ?? null;
       setUser(u1);
 
-      // fallback getUser
+      // fallback getUser (cookie hydration)
+      let finalUser = u1;
       if (!u1) {
         const { data: u2 } = await supabase.auth.getUser();
         if (!mounted) return;
+        finalUser = u2.user ?? null;
+        setUser(finalUser);
+      }
 
-        const u = u2.user ?? null;
-        setUser(u);
-        if (u) await loadProducts(u);
+      // ✅ load products first (always)
+      if (finalUser) {
+        await loadProducts(finalUser);
       } else {
-        await loadProducts(u1);
+        setProducts([]);
+        setLastLoadInfo("signed out");
       }
 
-      // pending
-      const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
-      if ((u1 || userRef.current) && pending) {
-        sessionStorage.removeItem(PENDING_TRACK_KEY);
-        await trackUrl(pending);
-      }
-
+      // ✅ finish booting BEFORE any auto-track
       setBooting(false);
+
+      // ✅ now do pending track in background
+      if (finalUser) runPendingTrackInBackground();
     }
 
     init();
@@ -144,14 +159,12 @@ export default function HomePage() {
         setShowSignIn(false);
         await loadProducts(u);
 
-        const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
-        if (pending) {
-          sessionStorage.removeItem(PENDING_TRACK_KEY);
-          await trackUrl(pending);
-        }
+        // ✅ don’t block UI
+        runPendingTrackInBackground();
       } else {
         setProducts([]);
         setLastLoadInfo("signed out");
+        sessionStorage.removeItem(PENDING_TRACK_KEY);
       }
     });
 
@@ -173,6 +186,7 @@ export default function HomePage() {
       setProducts([]);
       setShowSignIn(false);
       sessionStorage.removeItem(PENDING_TRACK_KEY);
+      setBooting(false);
     };
     window.addEventListener("pricescan-signed-out", onSignedOut as any);
     return () =>
@@ -268,7 +282,6 @@ export default function HomePage() {
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      {/* ✅ Always-visible state line */}
       <div className="text-xs text-gray-500 mb-6">
         {user ? `user=${user.id}` : "user=null"} • products={products.length} •{" "}
         {lastLoadInfo}
@@ -300,31 +313,11 @@ export default function HomePage() {
       ) : products.length === 0 ? (
         <p className="text-gray-500 text-center">No items yet — track something!</p>
       ) : (
-        <>
-          {/* ✅ RAW LIST - proves products are in state */}
-          <div className="mb-6 rounded-xl border bg-white p-4">
-            <div className="font-semibold mb-2">
-              Raw rows (should show immediately)
-            </div>
-            <div className="text-xs text-gray-700 space-y-2">
-              {products.slice(0, 20).map((p) => (
-                <div key={p.id} className="break-all">
-                  <div>
-                    <b>{p.title || "No title"}</b>
-                  </div>
-                  <div>{p.url}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Product cards (if ProductCard crashes, raw list still shows) */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {products.map((p) => (
-              <ProductCard key={p.id} product={p} />
-            ))}
-          </div>
-        </>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {products.map((p) => (
+            <ProductCard key={p.id} product={p} />
+          ))}
+        </div>
       )}
     </div>
   );
