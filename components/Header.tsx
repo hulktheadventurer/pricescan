@@ -12,8 +12,16 @@ import {
   isSupportedCurrency,
 } from "@/lib/currency";
 
+function withTimeout<T>(p: Promise<T>, ms: number) {
+  return Promise.race<T>([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error("signout_timeout")), ms)
+    ),
+  ]);
+}
+
 export default function Header() {
-  // ✅ create once (stable)
   const supabase = useMemo(() => createClientComponentClient(), []);
   const router = useRouter();
 
@@ -21,7 +29,6 @@ export default function Header() {
   const [currency, setCurrency] = useState<CurrencyCode>("GBP");
   const [signingOut, setSigningOut] = useState(false);
 
-  // sign-in UI state (top right)
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -29,14 +36,14 @@ export default function Header() {
     let mounted = true;
 
     const load = async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const u = sessionData?.session?.user ?? null;
+      const { data } = await supabase.auth.getSession();
+      const u = data.session?.user ?? null;
       if (!mounted) return;
 
       setUser(u);
 
       if (u) {
-        const { data } = await supabase
+        const { data: prof } = await supabase
           .from("user_profile")
           .select("currency")
           .eq("user_id", u.id)
@@ -44,9 +51,12 @@ export default function Header() {
 
         if (!mounted) return;
 
-        if (data?.currency && isSupportedCurrency(data.currency)) {
-          setCurrency(data.currency as CurrencyCode);
-          broadcastCurrency(data.currency as CurrencyCode);
+        if (prof?.currency && isSupportedCurrency(prof.currency)) {
+          const c = prof.currency as CurrencyCode;
+          setCurrency(c);
+          window.dispatchEvent(
+            new CustomEvent("pricescan-currency-update", { detail: c })
+          );
         }
       }
     };
@@ -65,12 +75,6 @@ export default function Header() {
     };
   }, [supabase]);
 
-  function broadcastCurrency(code: CurrencyCode) {
-    window.dispatchEvent(
-      new CustomEvent("pricescan-currency-update", { detail: code })
-    );
-  }
-
   async function persistCurrency(nextCurrency: CurrencyCode) {
     if (!user) return;
     await supabase.from("user_profile").upsert({
@@ -81,7 +85,9 @@ export default function Header() {
 
   async function handleCurrencyChange(code: CurrencyCode) {
     setCurrency(code);
-    broadcastCurrency(code);
+    window.dispatchEvent(
+      new CustomEvent("pricescan-currency-update", { detail: code })
+    );
     await persistCurrency(code);
   }
 
@@ -92,12 +98,10 @@ export default function Header() {
     setSending(true);
     try {
       const redirectTo = `${window.location.origin}/auth/callback`;
-
       const { error } = await supabase.auth.signInWithOtp({
         email: e,
         options: { emailRedirectTo: redirectTo },
       });
-
       if (error) throw error;
 
       toast.success("Magic link sent — check your email.");
@@ -113,26 +117,28 @@ export default function Header() {
     if (signingOut) return;
     setSigningOut(true);
 
+    // ✅ immediately clear UI + tell the app
+    setUser(null);
+    window.dispatchEvent(new CustomEvent("pricescan-signed-out"));
+    window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
+
+    // ✅ attempt remote signout but DON'T let it hang forever
     try {
-      const { error } = await supabase.auth.signOut();
-      if (error) throw error;
-
-      // ✅ clear local header state immediately
-      setUser(null);
-
-      // ✅ tell the rest of the app to clear + reload
-      window.dispatchEvent(new CustomEvent("pricescan-signed-out"));
-      window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
-
+      await withTimeout(supabase.auth.signOut(), 2500);
+    } catch (e: any) {
+      // ✅ fallback: force local signout (no network)
+      try {
+        // supabase-js supports scope in v2
+        // @ts-ignore
+        await supabase.auth.signOut({ scope: "local" });
+      } catch {}
+    } finally {
       toast.success("Signed out.");
 
-      // ✅ hard reset UI state / cache
+      // ✅ HARD reset (no router/hydration weirdness)
+      window.location.replace("/");
+      // also refresh Next cache in case browser blocks replace for some reason
       router.refresh();
-      window.location.href = "/";
-    } catch (err: any) {
-      console.error("Sign out failed:", err);
-      toast.error(err?.message || "Sign out failed.");
-      setSigningOut(false);
     }
   }
 
@@ -145,7 +151,6 @@ export default function Header() {
         </Link>
 
         <div className="flex items-center space-x-4">
-          {/* Currency Selector */}
           <div className="flex items-center space-x-2">
             <span className="text-gray-600 text-sm">Currency:</span>
             <select
@@ -161,7 +166,6 @@ export default function Header() {
             </select>
           </div>
 
-          {/* Auth */}
           {user ? (
             <>
               <span className="text-gray-600 text-sm">{user.email}</span>
