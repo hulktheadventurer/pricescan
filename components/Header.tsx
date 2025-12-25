@@ -16,7 +16,7 @@ function withTimeout<T>(p: Promise<T>, ms: number) {
   return Promise.race<T>([
     p,
     new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error("signout_timeout")), ms)
+      setTimeout(() => reject(new Error("timeout")), ms)
     ),
   ]);
 }
@@ -35,7 +35,7 @@ export default function Header() {
   const redirectTo =
     process.env.NEXT_PUBLIC_SITE_URL
       ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
-      : `${window.location.origin}/auth/callback`;
+      : `${typeof window !== "undefined" ? window.location.origin : ""}/auth/callback`;
 
   useEffect(() => {
     let mounted = true;
@@ -122,12 +122,11 @@ export default function Header() {
     if (signingOut) return;
     setSigningOut(true);
 
-    // ✅ immediately clear UI
+    // clear UI immediately
     setUser(null);
     window.dispatchEvent(new CustomEvent("pricescan-signed-out"));
     window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
 
-    // ✅ don't let remote signout hang forever
     try {
       await withTimeout(supabase.auth.signOut(), 2500);
     } catch {

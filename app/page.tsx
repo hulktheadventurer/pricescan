@@ -18,13 +18,14 @@ export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [user, setUser] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
+  const [booting, setBooting] = useState(true);
 
   const userRef = useRef<any>(null);
   useEffect(() => {
     userRef.current = user;
   }, [user]);
 
-  // ✅ Sign-in modal state (old flow)
+  // ✅ Sign-in modal state
   const [showSignIn, setShowSignIn] = useState(false);
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
@@ -32,7 +33,7 @@ export default function HomePage() {
   const redirectTo =
     process.env.NEXT_PUBLIC_SITE_URL
       ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
-      : `${window.location.origin}/auth/callback`;
+      : `${typeof window !== "undefined" ? window.location.origin : ""}/auth/callback`;
 
   async function loadProducts(forUser: any) {
     if (!forUser?.id) {
@@ -42,17 +43,20 @@ export default function HomePage() {
 
     const { data, error } = await supabase
       .from("tracked_products")
-      .select("*")
+      .select(
+        "id,user_id,url,created_at,title,merchant,locale,is_sold_out,is_ended,status_message"
+      )
       .eq("user_id", forUser.id)
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error("loadProducts error:", error);
-      toast.error(error.message || "Failed to load tracked items.");
+      console.error("❌ loadProducts error:", error);
+      toast.error(`loadProducts: ${error.message}`);
       setProducts([]);
       return;
     }
 
+    console.log("✅ loadProducts rows:", data?.length, data);
     setProducts(data ?? []);
   }
 
@@ -79,6 +83,8 @@ export default function HomePage() {
 
       toast.success("Product added.");
       setUrl("");
+
+      // reload products after tracking
       window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
     } catch (err: any) {
       toast.error(err?.message || "Something went wrong.");
@@ -87,29 +93,39 @@ export default function HomePage() {
     }
   }
 
-  // ✅ session + auth changes (run once)
+  // ✅ Session init + auth changes
   useEffect(() => {
     let mounted = true;
 
     async function init() {
-      const { data, error } = await supabase.auth.getSession();
+      setBooting(true);
+
+      // 1) getSession (fast)
+      const { data: s1 } = await supabase.auth.getSession();
       if (!mounted) return;
-      if (error) console.error("getSession error:", error);
 
-      const u = data.session?.user ?? null;
-      setUser(u);
+      const u1 = s1.session?.user ?? null;
+      setUser(u1);
 
-      if (u) {
-        await loadProducts(u);
-
-        const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
-        if (pending) {
-          sessionStorage.removeItem(PENDING_TRACK_KEY);
-          await trackUrl(pending);
-        }
+      // 2) If session is still null, do a follow-up getUser() (sometimes cookie hydration lags)
+      if (!u1) {
+        const { data: u2 } = await supabase.auth.getUser();
+        if (!mounted) return;
+        const u = u2.user ?? null;
+        setUser(u);
+        if (u) await loadProducts(u);
       } else {
-        setProducts([]);
+        await loadProducts(u1);
       }
+
+      // pending auto-track
+      const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
+      if ((u1 || userRef.current) && pending) {
+        sessionStorage.removeItem(PENDING_TRACK_KEY);
+        await trackUrl(pending);
+      }
+
+      setBooting(false);
     }
 
     init();
@@ -147,12 +163,14 @@ export default function HomePage() {
     };
   }, [supabase]);
 
+  // header can open modal
   useEffect(() => {
     const open = () => setShowSignIn(true);
     window.addEventListener("pricescan-open-signin", open as any);
     return () => window.removeEventListener("pricescan-open-signin", open as any);
   }, []);
 
+  // clear instantly when signed out
   useEffect(() => {
     const onSignedOut = () => {
       setUser(null);
@@ -203,8 +221,15 @@ export default function HomePage() {
     await trackUrl(input);
   }
 
+  async function debugReload() {
+    const u = userRef.current;
+    console.log("🔧 debugReload user:", u);
+    await loadProducts(u);
+  }
+
   return (
     <div className="max-w-6xl mx-auto px-4 py-10">
+      {/* SIGN IN MODAL */}
       {showSignIn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
@@ -255,7 +280,7 @@ export default function HomePage() {
         🔎 PriceScan — Track Product Prices
       </h1>
 
-      <div className="flex gap-3 mb-10">
+      <div className="flex gap-3 mb-4">
         <input
           type="text"
           value={url}
@@ -272,7 +297,19 @@ export default function HomePage() {
         </button>
       </div>
 
-      {!user ? (
+      {/* ✅ DEBUG BUTTON (TEMP) */}
+      <div className="flex justify-end mb-10">
+        <button
+          onClick={debugReload}
+          className="text-xs text-gray-500 hover:underline"
+        >
+          Debug: Reload products
+        </button>
+      </div>
+
+      {booting ? (
+        <p className="text-gray-500 text-center">Loading…</p>
+      ) : !user ? (
         <p className="text-gray-500 text-center">
           Paste an eBay link and click <b>Track</b>.
         </p>
