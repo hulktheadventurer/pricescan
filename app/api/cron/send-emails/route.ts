@@ -7,7 +7,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
-const EMAIL_FROM = process.env.EMAIL_FROM || "PriceScan <alerts@pricescan.ai>";
+// ✅ FIX: support ALERT_FROM as fallback (your Vercel env var name)
+const EMAIL_FROM =
+  process.env.EMAIL_FROM ||
+  process.env.ALERT_FROM ||
+  "PriceScan <alerts@pricescan.ai>";
 
 async function sendEmail(to: string, subject: string, html: string) {
   if (!RESEND_API_KEY) {
@@ -195,9 +199,12 @@ export async function GET() {
         processed++;
         emailed++;
       } else {
+        // optional: count these as skipped so the JSON reflects reality
+        skipped++;
         console.error("❌ Email not sent; leaving alert unprocessed:", alert.id, sendRes?.error);
       }
     } catch (err) {
+      skipped++;
       console.error("❌ Email processing error:", err);
     }
   }

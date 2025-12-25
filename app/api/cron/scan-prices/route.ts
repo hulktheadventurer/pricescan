@@ -1,3 +1,4 @@
+// app/api/cron/scan-prices/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseServer";
 import { getEbayAccessToken } from "@/lib/ebay-auth";
@@ -49,11 +50,11 @@ export async function GET() {
 
   const { data: products, error: prodErr } = await supabaseAdmin
     .from("tracked_products")
-    .select("id, sku, merchant, status, url, title, user_id")
+    .select("id, sku, merchant, status")
     .eq("merchant", "ebay");
 
   if (prodErr) {
-    console.error("❌ Failed to load tracked_products:", prodErr);
+    console.error("❌ Failed to fetch tracked_products:", prodErr);
     return NextResponse.json({ ok: false, startedAt, error: prodErr.message }, { status: 500 });
   }
 
@@ -61,98 +62,98 @@ export async function GET() {
 
   let scanned = 0;
 
-  // Remember previous status to detect RESTOCK
+  // store old statuses to detect restock
   const previousStatus: Record<string, string> = {};
   products.forEach((p) => (previousStatus[p.id] = p.status));
 
-  const statusUpdates: { id: string; status: EbayStatus }[] = [];
-  const priceInserts: { product_id: string; price: number; currency: string }[] = [];
+  const statusUpdates: Array<{ id: string; status: EbayStatus }> = [];
+  const priceInserts: Array<{ product_id: string; price: number; currency: string }> = [];
 
-  // For PRICE_DROP detection we need current snapshot vs previous low
-  const priceDropAlerts: { product_id: string; type: string; old_price: number; new_price: number }[] =
-    [];
+  // We'll queue alerts in bulk too
+  const alertInserts: Array<{
+    product_id: string;
+    type: "PRICE_DROP" | "RESTOCK";
+    old_price?: number | null;
+    new_price?: number | null;
+  }> = [];
 
   for (const p of products) {
     if (!p.sku) continue;
+
+    // get previous/latest snapshot BEFORE inserting new one
+    const { data: prevSnap } = await supabaseAdmin
+      .from("price_snapshots")
+      .select("price, currency, seen_at")
+      .eq("product_id", p.id)
+      .order("seen_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const prevPrice = prevSnap?.price ?? null;
 
     const item = await fetchEbayItem(p.sku);
     scanned++;
 
     if (!item) continue;
 
-    // status change tracking
+    // status change?
     if (item.status !== p.status) {
       statusUpdates.push({ id: p.id, status: item.status });
     }
 
-    // price snapshot + price drop detection
+    // save snapshot
     if (item.price != null && item.currency) {
-      // Find previous lowest price (excluding this new one)
-      const { data: prevSnaps, error: snapErr } = await supabaseAdmin
-        .from("price_snapshots")
-        .select("price")
-        .eq("product_id", p.id)
-        .order("seen_at", { ascending: false })
-        .limit(200);
-
-      if (snapErr) {
-        console.error("❌ Failed to load snapshots for", p.id, snapErr);
-      } else if (prevSnaps && prevSnaps.length > 0) {
-        const prevLow = Math.min(...prevSnaps.map((s: any) => Number(s.price)).filter((n) => isFinite(n)));
-
-        // Only alert if this is a NEW LOW (strictly lower)
-        if (isFinite(prevLow) && item.price < prevLow) {
-          priceDropAlerts.push({
-            product_id: p.id,
-            type: "PRICE_DROP",
-            old_price: prevLow,
-            new_price: item.price,
-          });
-        }
-      }
-
       priceInserts.push({
         product_id: p.id,
         price: item.price,
         currency: item.currency,
       });
+
+      // PRICE DROP detection: compare to previous latest snapshot
+      if (prevPrice != null && item.price < prevPrice) {
+        alertInserts.push({
+          product_id: p.id,
+          type: "PRICE_DROP",
+          old_price: prevPrice,
+          new_price: item.price,
+        });
+      }
     }
   }
 
-  // Insert prices
+  // Insert snapshots
   if (priceInserts.length > 0) {
-    const { error } = await supabaseAdmin.from("price_snapshots").insert(priceInserts);
-    if (error) console.error("❌ Insert price_snapshots failed:", error);
+    const { error: insErr } = await supabaseAdmin.from("price_snapshots").insert(priceInserts);
+    if (insErr) console.error("❌ price_snapshots insert error:", insErr);
   }
 
-  // Update statuses in DB
+  // Update statuses
   for (const s of statusUpdates) {
-    const { error } = await supabaseAdmin
+    const { error: upErr } = await supabaseAdmin
       .from("tracked_products")
       .update({ status: s.status })
       .eq("id", s.id);
 
-    if (error) console.error("❌ Update tracked_products status failed:", error);
+    if (upErr) console.error("❌ tracked_products status update error:", upErr);
   }
 
-  // Restock detection -> queue RESTOCK email
+  // RESTOCK detection (SOLD_OUT -> ACTIVE)
   for (const s of statusUpdates) {
     const oldS = previousStatus[s.id];
     const newS = s.status;
 
     if (oldS === "SOLD_OUT" && newS === "ACTIVE") {
-      const { error } = await supabaseAdmin.from("cron_alert_queue").insert({
+      alertInserts.push({
         product_id: s.id,
         type: "RESTOCK",
       });
-      if (error) console.error("❌ Insert RESTOCK alert failed:", error);
     }
   }
 
-  // Price drop detection -> queue PRICE_DROP email
-  if (priceDropAlerts.length > 0) {
-    const { error } = await supabaseAdmin.from("cron_alert_queue").insert(priceDropAlerts);
-    if (error) console.error("❌ Insert PRICE_DROP alerts failed:", error);
+  // Insert alerts (this is what powers email sending)
+  if (alertInserts.length > 0) {
+    const { error: alertErr } = await supabaseAdmin.from("cron_alert_queue").insert(alertInserts);
+    if (alertErr) console.error("❌ cron_alert_queue insert error:", alertErr);
   }
 
   return NextResponse.json({
@@ -161,6 +162,6 @@ export async function GET() {
     scanned,
     pricesSaved: priceInserts.length,
     statusUpdated: statusUpdates.length,
-    priceDropQueued: priceDropAlerts.length,
+    alertsQueued: alertInserts.length,
   });
 }
