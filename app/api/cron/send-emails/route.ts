@@ -1,6 +1,10 @@
+// app/api/cron/send-emails/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseServer";
 import { getEbayAffiliateLink } from "@/lib/affiliates/ebay";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const EMAIL_FROM = process.env.EMAIL_FROM || "PriceScan <alerts@pricescan.ai>";
@@ -8,10 +12,10 @@ const EMAIL_FROM = process.env.EMAIL_FROM || "PriceScan <alerts@pricescan.ai>";
 async function sendEmail(to: string, subject: string, html: string) {
   if (!RESEND_API_KEY) {
     console.warn("⚠️ RESEND_API_KEY NOT SET — skipping email send");
-    return;
+    return { ok: false, error: "missing_resend_api_key" as const };
   }
 
-  const r = await fetch("https://api.resend.com/emails", {
+  const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${RESEND_API_KEY}`,
@@ -20,15 +24,21 @@ async function sendEmail(to: string, subject: string, html: string) {
     body: JSON.stringify({ from: EMAIL_FROM, to, subject, html }),
   });
 
-  if (!r.ok) {
-    console.error("❌ Resend failed:", await r.text());
+  const text = await res.text().catch(() => "");
+
+  if (!res.ok) {
+    console.error("❌ Resend send failed:", res.status, text);
+    return { ok: false, error: `resend_failed_${res.status}` as const, details: text };
   }
+
+  console.log("✅ Email sent to:", to);
+  return { ok: true as const, details: text };
 }
 
 /* -------------------- PRICE DROP EMAIL -------------------- */
 function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
   const diff = oldPrice - newPrice;
-  const pct = oldPrice > 0 ? (diff / oldPrice) * 100 : 0;
+  const pct = oldPrice ? (diff / oldPrice) * 100 : 0;
   const affiliateUrl = getEbayAffiliateLink(item.url);
 
   return `
@@ -39,9 +49,13 @@ function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
     <h3>${escapeHtml(item.title || "Tracked item")}</h3>
 
     <p>
-      Previous low: <b>${item.currency || ""} ${oldPrice.toFixed(2)}</b><br/>
-      New price: <b style="color:#16a34a;">${item.currency || ""} ${newPrice.toFixed(2)}</b><br/>
-      Difference: <b>${item.currency || ""} ${diff.toFixed(2)} (-${pct.toFixed(1)}%)</b>
+      Previous low: <b>${item.currency || ""} ${Number(oldPrice).toFixed(2)}</b><br/>
+      New price: <b style="color:#16a34a;">${item.currency || ""} ${Number(newPrice).toFixed(
+        2
+      )}</b><br/>
+      Difference: <b>${item.currency || ""} ${Number(diff).toFixed(
+        2
+      )} (-${pct.toFixed(1)}%)</b>
     </p>
 
     <a href="${affiliateUrl}"
@@ -85,8 +99,7 @@ function escapeHtml(str: string) {
   return String(str)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/>/g, "&gt;");
 }
 
 /* -------------------- MAIN CRON -------------------- */
@@ -106,82 +119,88 @@ export async function GET() {
     return NextResponse.json({ ok: false, startedAt, error: alertErr.message }, { status: 500 });
   }
 
-  if (!alerts?.length) return NextResponse.json({ ok: true, startedAt, processed: 0 });
+  if (!alerts?.length) {
+    return NextResponse.json({ ok: true, startedAt, processed: 0, note: "no_pending_alerts" });
+  }
 
   let processed = 0;
+  let emailed = 0;
+  let skipped = 0;
 
   for (const alert of alerts) {
     try {
-      // 2) Product lookup
+      // Product lookup
       const { data: product, error: prodErr } = await supabaseAdmin
         .from("tracked_products")
-        .select("id, title, url, user_id")
+        .select("id, title, url, user_id, status, sku, merchant")
         .eq("id", alert.product_id)
         .maybeSingle();
 
       if (prodErr || !product) {
-        console.error("❌ Product lookup failed:", prodErr);
+        console.error("❌ Product lookup failed:", prodErr?.message);
+        skipped++;
         continue;
       }
 
-      // 3) User email via Supabase Admin API (reliable)
-      const { data: userData, error: userErr } = await supabaseAdmin.auth.admin.getUserById(
+      // ✅ Correct user lookup via Admin API
+      const { data: userRes, error: userErr } = await supabaseAdmin.auth.admin.getUserById(
         product.user_id
       );
 
-      const email = userData?.user?.email || "";
-      if (userErr || !email) {
-        console.error("❌ User lookup failed:", userErr);
+      if (userErr) {
+        console.error("❌ getUserById failed:", userErr);
+        skipped++;
         continue;
       }
 
-      // 4) Send based on type
+      const email = userRes?.user?.email;
+      if (!email) {
+        console.error("❌ user has no email:", product.user_id);
+        skipped++;
+        continue;
+      }
+
+      // Build + send
+      let sendRes: any = null;
+
       if (alert.type === "PRICE_DROP") {
-        // Prefer stored old/new prices from queue
-        let oldPrice = Number(alert.old_price);
-        let newPrice = Number(alert.new_price);
+        // Use old_price/new_price if present (your table has these)
+        const oldP = Number(alert.old_price ?? NaN);
+        const newP = Number(alert.new_price ?? NaN);
 
-        // Fallback: calculate from snapshots if missing
-        if (!isFinite(oldPrice) || !isFinite(newPrice)) {
-          const { data: snaps } = await supabaseAdmin
-            .from("price_snapshots")
-            .select("price, currency")
-            .eq("product_id", product.id)
-            .order("seen_at", { ascending: false });
-
-          if (!snaps || snaps.length < 2) continue;
-
-          newPrice = Number(snaps[0].price);
-          oldPrice = Math.min(...snaps.slice(1).map((s: any) => Number(s.price)));
+        if (!isFinite(oldP) || !isFinite(newP)) {
+          console.warn("⚠️ PRICE_DROP alert missing old/new price, skipping:", alert.id);
+          skipped++;
+          continue;
         }
 
-        await sendEmail(
+        sendRes = await sendEmail(
           email,
           `📉 Price dropped: ${product.title || "Tracked item"}`,
-          buildPriceDropEmail(
-            { ...product, currency: "GBP" },
-            oldPrice,
-            newPrice
-          )
+          buildPriceDropEmail(product, oldP, newP)
         );
       }
 
       if (alert.type === "RESTOCK") {
-        await sendEmail(
+        sendRes = await sendEmail(
           email,
           `🔔 Back in stock: ${product.title || "Tracked item"}`,
           buildRestockEmail(product)
         );
       }
 
-      // 5) Mark processed
-      await supabaseAdmin.from("cron_alert_queue").update({ processed: true }).eq("id", alert.id);
-
-      processed++;
+      // Only mark processed if email actually succeeded
+      if (sendRes?.ok) {
+        await supabaseAdmin.from("cron_alert_queue").update({ processed: true }).eq("id", alert.id);
+        processed++;
+        emailed++;
+      } else {
+        console.error("❌ Email not sent; leaving alert unprocessed:", alert.id, sendRes?.error);
+      }
     } catch (err) {
       console.error("❌ Email processing error:", err);
     }
   }
 
-  return NextResponse.json({ ok: true, startedAt, processed });
+  return NextResponse.json({ ok: true, startedAt, processed, emailed, skipped });
 }
