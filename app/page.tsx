@@ -11,49 +11,65 @@ function isAliExpressUrl(u: string) {
 
 const PENDING_TRACK_KEY = "pricescan_pending_track_url";
 
+function SkeletonCard() {
+  return (
+    <div className="bg-white border rounded-2xl p-5 shadow-sm">
+      <div className="h-5 w-3/4 bg-gray-200 rounded mb-4 animate-pulse" />
+      <div className="h-8 w-1/3 bg-gray-200 rounded mb-2 animate-pulse" />
+      <div className="h-3 w-1/2 bg-gray-200 rounded mb-6 animate-pulse" />
+      <div className="h-10 w-full bg-gray-200 rounded animate-pulse" />
+    </div>
+  );
+}
+
 export default function HomePage() {
   const supabase = useMemo(() => createClientComponentClient(), []);
 
   const [url, setUrl] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [tracking, setTracking] = useState(false);
 
   const [booting, setBooting] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
   const [user, setUser] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
-  const [lastLoadInfo, setLastLoadInfo] = useState<string>("");
+
+  // ✅ sign-in modal
+  const [showSignIn, setShowSignIn] = useState(false);
+  const [email, setEmail] = useState("");
+  const [sending, setSending] = useState(false);
 
   const userRef = useRef<any>(null);
   useEffect(() => {
     userRef.current = user;
   }, [user]);
 
-  // ✅ sign-in modal (restore)
-  const [showSignIn, setShowSignIn] = useState(false);
-  const [email, setEmail] = useState("");
-  const [sending, setSending] = useState(false);
-
   const redirectTo =
     process.env.NEXT_PUBLIC_SITE_URL
       ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
       : `${typeof window !== "undefined" ? window.location.origin : ""}/auth/callback`;
 
-  async function loadProductsViaApi() {
+  async function loadProductsViaApi({ silent }: { silent?: boolean } = {}) {
+    if (!silent) setRefreshing(true);
+
     try {
       const res = await fetch("/api/products", { cache: "no-store" });
+
       if (res.status === 401) {
         setProducts([]);
-        setLastLoadInfo("not signed in");
         return;
       }
+
       const json = await res.json();
       if (!json?.ok) throw new Error(json?.error || "failed_products");
+
       setProducts(json.items ?? []);
-      setLastLoadInfo(`loaded ${json.items?.length ?? 0} rows`);
     } catch (e: any) {
       console.error("❌ /api/products failed:", e);
       setProducts([]);
-      setLastLoadInfo(`error: ${e?.message || "products_failed"}`);
       toast.error(e?.message || "Failed to load products");
+    } finally {
+      if (!silent) setRefreshing(false);
     }
   }
 
@@ -67,7 +83,7 @@ export default function HomePage() {
       return;
     }
 
-    setLoading(true);
+    setTracking(true);
     try {
       const res = await fetch("/api/track", {
         method: "POST",
@@ -75,8 +91,16 @@ export default function HomePage() {
         body: JSON.stringify({ url: input }),
       });
 
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Failed to track product");
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // ✅ clearer 401 UX
+        if (res.status === 401) {
+          toast.error("Please sign in to track products.");
+          setShowSignIn(true);
+          return;
+        }
+        throw new Error(json?.error || "Failed to track product");
+      }
 
       toast.success("Product added.");
       setUrl("");
@@ -85,7 +109,7 @@ export default function HomePage() {
     } catch (err: any) {
       toast.error(err?.message || "Something went wrong.");
     } finally {
-      setLoading(false);
+      setTracking(false);
     }
   }
 
@@ -109,6 +133,7 @@ export default function HomePage() {
 
       const { data: s1 } = await supabase.auth.getSession();
       if (!mounted) return;
+
       const u1 = s1.session?.user ?? null;
       setUser(u1);
 
@@ -118,10 +143,12 @@ export default function HomePage() {
         setUser(u2.user ?? null);
       }
 
-      await loadProductsViaApi();
+      // ✅ load products from server API
+      await loadProductsViaApi({ silent: true });
 
       setBooting(false);
 
+      // ✅ don't block UI
       runPendingTrackInBackground();
     }
 
@@ -139,7 +166,6 @@ export default function HomePage() {
         runPendingTrackInBackground();
       } else {
         setProducts([]);
-        setLastLoadInfo("not signed in");
         sessionStorage.removeItem(PENDING_TRACK_KEY);
         setBooting(false);
       }
@@ -164,7 +190,6 @@ export default function HomePage() {
       setShowSignIn(false);
       sessionStorage.removeItem(PENDING_TRACK_KEY);
       setBooting(false);
-      setLastLoadInfo("not signed in");
     };
     window.addEventListener("pricescan-signed-out", onSignedOut as any);
     return () =>
@@ -201,7 +226,6 @@ export default function HomePage() {
     }
 
     if (!userRef.current) {
-      // ✅ show feedback + modal (so it doesn't look frozen)
       toast.error("Please sign in to track products.");
       sessionStorage.setItem(PENDING_TRACK_KEY, input);
       setShowSignIn(true);
@@ -213,7 +237,7 @@ export default function HomePage() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-10">
-      {/* ✅ SIGN-IN MODAL (RESTORED) */}
+      {/* ✅ SIGN-IN MODAL */}
       {showSignIn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
@@ -258,14 +282,7 @@ export default function HomePage() {
         </div>
       )}
 
-      <h1 className="text-3xl font-bold mb-2">
-        🔎 PriceScan — Track Product Prices
-      </h1>
-
-      <div className="text-xs text-gray-500 mb-6">
-        {user ? `user=${user.id}` : "user=null"} • products={products.length} •{" "}
-        {lastLoadInfo}
-      </div>
+      <h1 className="text-3xl font-bold mb-6">🔎 PriceScan — Track Product Prices</h1>
 
       <div className="flex gap-3 mb-10">
         <input
@@ -277,19 +294,28 @@ export default function HomePage() {
         />
         <button
           onClick={handleTrack}
-          disabled={loading}
+          disabled={tracking}
           className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 disabled:opacity-60"
         >
-          {loading ? "Tracking…" : "Track"}
+          {tracking ? "Tracking…" : "Track"}
         </button>
       </div>
 
       {booting ? (
-        <p className="text-gray-500 text-center">Loading…</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <SkeletonCard />
+          <SkeletonCard />
+        </div>
       ) : !user ? (
         <p className="text-gray-500 text-center">
-          Paste an eBay link and click <b>Track</b>.
+          Paste an eBay link and click <b>Track</b>. Then compare similar items on Amazon and
+          AliExpress.
         </p>
+      ) : refreshing ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <SkeletonCard />
+          <SkeletonCard />
+        </div>
       ) : products.length === 0 ? (
         <p className="text-gray-500 text-center">No items yet — track something!</p>
       ) : (
