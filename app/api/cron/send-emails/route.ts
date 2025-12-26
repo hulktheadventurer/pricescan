@@ -1,7 +1,6 @@
 // app/api/cron/send-emails/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseServer";
-import { getEbayAffiliateLink } from "@/lib/affiliates/ebay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,6 +8,13 @@ export const dynamic = "force-dynamic";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const EMAIL_FROM = process.env.EMAIL_FROM || "PriceScan <alerts@pricescan.ai>";
 
+// Prefer NEXT_PUBLIC_BASE_URL so it works across envs (prod/preview/local)
+const BASE_URL =
+  process.env.NEXT_PUBLIC_BASE_URL ||
+  process.env.BASE_URL ||
+  "https://pricescan.ai";
+
+/* -------------------- EMAIL SENDER -------------------- */
 async function sendEmail(to: string, subject: string, html: string) {
   if (!RESEND_API_KEY) {
     console.warn("⚠️ RESEND_API_KEY NOT SET — skipping email send");
@@ -34,20 +40,7 @@ async function sendEmail(to: string, subject: string, html: string) {
   return { ok: true as const, status: res.status, details: text };
 }
 
-/* -------------------- UTM HELPER -------------------- */
-function withUtm(url: string, campaign: string) {
-  try {
-    const u = new URL(url);
-    u.searchParams.set("utm_source", "pricescan");
-    u.searchParams.set("utm_medium", "email");
-    u.searchParams.set("utm_campaign", campaign);
-    return u.toString();
-  } catch {
-    return url; // if URL parsing fails, just return original
-  }
-}
-
-/* -------------------- EMAIL TEMPLATES -------------------- */
+/* -------------------- HTML ESCAPE -------------------- */
 function escapeHtml(str: string) {
   return String(str)
     .replace(/&/g, "&amp;")
@@ -55,11 +48,23 @@ function escapeHtml(str: string) {
     .replace(/>/g, "&gt;");
 }
 
+/* -------------------- CLICK TRACK LINK -------------------- */
+// Routes through your Next.js redirect endpoint (which logs to outbound_clicks)
+function buildTrackedEbayLink(productId: string, campaign: string, source: string) {
+  const u = new URL(`${BASE_URL.replace(/\/$/, "")}/go/ebay`);
+  u.searchParams.set("product", productId);
+  u.searchParams.set("campaign", campaign);
+  u.searchParams.set("source", source);
+  return u.toString();
+}
+
+/* -------------------- EMAIL TEMPLATES -------------------- */
 function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
   const diff = oldPrice - newPrice;
   const pct = oldPrice ? (diff / oldPrice) * 100 : 0;
 
-  const affiliateUrl = withUtm(getEbayAffiliateLink(item.url), "price_drop");
+  // ✅ tracked click URL
+  const viewUrl = buildTrackedEbayLink(item.id, "price_drop", "email");
 
   return `
   <div style="font-family: system-ui; padding:16px;">
@@ -70,11 +75,15 @@ function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
 
     <p>
       Previous low: <b>${item.currency || ""} ${Number(oldPrice).toFixed(2)}</b><br/>
-      New price: <b style="color:#16a34a;">${item.currency || ""} ${Number(newPrice).toFixed(2)}</b><br/>
-      Difference: <b>${item.currency || ""} ${Number(diff).toFixed(2)} (-${pct.toFixed(1)}%)</b>
+      New price: <b style="color:#16a34a;">${item.currency || ""} ${Number(newPrice).toFixed(
+        2
+      )}</b><br/>
+      Difference: <b>${item.currency || ""} ${Number(diff).toFixed(
+        2
+      )} (-${pct.toFixed(1)}%)</b>
     </p>
 
-    <a href="${affiliateUrl}"
+    <a href="${viewUrl}"
        style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;
               border-radius:50px;text-decoration:none;font-weight:600;">
       View on eBay
@@ -87,7 +96,7 @@ function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
 }
 
 function buildRestockEmail(item: any) {
-  const affiliateUrl = withUtm(getEbayAffiliateLink(item.url), "restock");
+  const viewUrl = buildTrackedEbayLink(item.id, "restock", "email");
 
   return `
   <div style="font-family: system-ui; padding:16px;">
@@ -98,7 +107,7 @@ function buildRestockEmail(item: any) {
 
     <p>It was previously sold out, but it's now ACTIVE again.</p>
 
-    <a href="${affiliateUrl}"
+    <a href="${viewUrl}"
        style="display:inline-block;background:#16a34a;color:white;padding:10px 18px;
               border-radius:50px;text-decoration:none;font-weight:600;">
       View on eBay
@@ -113,7 +122,6 @@ function buildRestockEmail(item: any) {
 /* -------------------- MAIN CRON -------------------- */
 export async function GET() {
   const startedAt = new Date().toISOString();
-
   const failures: any[] = [];
 
   // 1) Get pending alerts
@@ -133,7 +141,14 @@ export async function GET() {
   }
 
   if (!alerts?.length) {
-    return NextResponse.json({ ok: true, startedAt, processed: 0, emailed: 0, skipped: 0 });
+    return NextResponse.json({
+      ok: true,
+      startedAt,
+      processed: 0,
+      emailed: 0,
+      skipped: 0,
+      failures: [],
+    });
   }
 
   let processed = 0;
@@ -145,7 +160,7 @@ export async function GET() {
       // Product lookup
       const { data: product, error: prodErr } = await supabaseAdmin
         .from("tracked_products")
-.select("id, title, url, user_id, status, sku, merchant")
+        .select("id, title, url, user_id, status, sku, merchant")
         .eq("id", alert.product_id)
         .maybeSingle();
 
@@ -160,10 +175,9 @@ export async function GET() {
         continue;
       }
 
-      // ✅ Correct user lookup via Admin API
-      const { data: userRes, error: userErr } = await supabaseAdmin.auth.admin.getUserById(
-        product.user_id
-      );
+      // User lookup via Admin API (correct)
+      const { data: userRes, error: userErr } =
+        await supabaseAdmin.auth.admin.getUserById(product.user_id);
 
       if (userErr) {
         skipped++;
@@ -192,7 +206,6 @@ export async function GET() {
       let sendRes: any = null;
 
       if (alert.type === "PRICE_DROP") {
-        // Prefer queue old_price/new_price if present (fast + reliable)
         const oldP = Number(alert.old_price ?? NaN);
         const newP = Number(alert.new_price ?? NaN);
 
@@ -223,7 +236,11 @@ export async function GET() {
 
       // Only mark processed if email actually succeeded
       if (sendRes?.ok) {
-        await supabaseAdmin.from("cron_alert_queue").update({ processed: true }).eq("id", alert.id);
+        await supabaseAdmin
+          .from("cron_alert_queue")
+          .update({ processed: true })
+          .eq("id", alert.id);
+
         processed++;
         emailed++;
       } else {
