@@ -145,7 +145,7 @@ export async function GET() {
       // Product lookup
       const { data: product, error: prodErr } = await supabaseAdmin
         .from("tracked_products")
-        .select("id, title, url, user_id, status, sku, merchant, currency")
+.select("id, title, url, user_id, status, sku, merchant")
         .eq("id", alert.product_id)
         .maybeSingle();
 
