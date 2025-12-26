@@ -19,15 +19,33 @@ async function sendEmail(to: string, subject: string, html: string) {
       Authorization: `Bearer ${RESEND_API_KEY}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ from: EMAIL_FROM, to, subject, html }),
+    body: JSON.stringify({
+      from: EMAIL_FROM,
+      to,
+      subject,
+      html,
+    }),
   });
+}
+
+/* -------------------- UTM HELPER -------------------- */
+function withUtm(url: string, campaign: string) {
+  const u = new URL(url);
+  u.searchParams.set("utm_source", "pricescan");
+  u.searchParams.set("utm_medium", "email");
+  u.searchParams.set("utm_campaign", campaign);
+  return u.toString();
 }
 
 /* -------------------- PRICE DROP EMAIL -------------------- */
 function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
   const diff = oldPrice - newPrice;
   const pct = (diff / oldPrice) * 100;
-  const affiliateUrl = getEbayAffiliateLink(item.url);
+
+  const affiliateUrl = withUtm(
+    getEbayAffiliateLink(item.url),
+    "price_drop"
+  );
 
   return `
   <div style="font-family: system-ui; padding:16px;">
@@ -56,7 +74,10 @@ function buildPriceDropEmail(item: any, oldPrice: number, newPrice: number) {
 
 /* -------------------- RESTOCK EMAIL -------------------- */
 function buildRestockEmail(item: any) {
-  const affiliateUrl = getEbayAffiliateLink(item.url);
+  const affiliateUrl = withUtm(
+    getEbayAffiliateLink(item.url),
+    "restock"
+  );
 
   return `
   <div style="font-family: system-ui; padding:16px;">
@@ -79,7 +100,7 @@ function buildRestockEmail(item: any) {
   </div>`;
 }
 
-/* -------------------- HTML Escape -------------------- */
+/* -------------------- HTML ESCAPE -------------------- */
 function escape(str: string) {
   return str
     .replace(/&/g, "&amp;")
@@ -91,7 +112,6 @@ function escape(str: string) {
 export async function GET() {
   const startedAt = new Date().toISOString();
 
-  // 1) Get pending alerts
   const { data: alerts, error: alertErr } = await supabaseAdmin
     .from("cron_alert_queue")
     .select("*")
@@ -111,17 +131,14 @@ export async function GET() {
 
   for (const alert of alerts) {
     try {
-      /* -------------------- PRODUCT LOOKUP -------------------- */
       const { data: product } = await supabaseAdmin
         .from("tracked_products")
         .select("id, title, url, user_id, status, sku")
         .eq("id", alert.product_id)
         .single();
 
-      // TS Fix: If product missing → skip
       if (!product) continue;
 
-      /* -------------------- USER LOOKUP -------------------- */
       const { data: user, error: userErr } = await supabaseAdmin
         .from("auth.users")
         .select("email")
@@ -130,7 +147,6 @@ export async function GET() {
 
       if (userErr || !user?.email) continue;
 
-      /* -------------------- PRICE DROP -------------------- */
       if (alert.type === "PRICE_DROP") {
         const { data: snaps } = await supabaseAdmin
           .from("price_snapshots")
@@ -152,7 +168,6 @@ export async function GET() {
         }
       }
 
-      /* -------------------- RESTOCK -------------------- */
       if (alert.type === "RESTOCK") {
         await sendEmail(
           user.email,
@@ -161,7 +176,6 @@ export async function GET() {
         );
       }
 
-      /* -------------------- MARK AS PROCESSED -------------------- */
       await supabaseAdmin
         .from("cron_alert_queue")
         .update({ processed: true })
