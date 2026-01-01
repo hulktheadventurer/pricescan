@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import ProductCard from "@/components/ProductCard";
 
@@ -9,6 +10,8 @@ function isAliExpressUrl(u: string) {
   return /aliexpress\./i.test(u);
 }
 
+// When user clicks Track while signed-out, store the URL here.
+// After they sign in, we auto-track it.
 const PENDING_TRACK_KEY = "pricescan_pending_track_url";
 
 function SkeletonCard() {
@@ -24,6 +27,7 @@ function SkeletonCard() {
 
 export default function HomePage() {
   const supabase = useMemo(() => createClientComponentClient(), []);
+  const router = useRouter();
 
   const [url, setUrl] = useState("");
   const [tracking, setTracking] = useState(false);
@@ -34,21 +38,11 @@ export default function HomePage() {
   const [user, setUser] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
 
-  const [showSignIn, setShowSignIn] = useState(false);
-  const [email, setEmail] = useState("");
-  const [sending, setSending] = useState(false);
-
+  // Keep a ref so async handlers always read the latest user value
   const userRef = useRef<any>(null);
   useEffect(() => {
     userRef.current = user;
   }, [user]);
-
-  const redirectTo =
-    process.env.NEXT_PUBLIC_SITE_URL
-      ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/finish`
-      : `${
-          typeof window !== "undefined" ? window.location.origin : ""
-        }/auth/finish`;
 
   async function loadProductsViaApi({ silent }: { silent?: boolean } = {}) {
     if (!silent) setRefreshing(true);
@@ -92,7 +86,9 @@ export default function HomePage() {
       if (!res.ok) {
         if (res.status === 401) {
           toast.error("Please sign in to track products.");
-          setShowSignIn(true);
+          // Save and redirect to signin
+          sessionStorage.setItem(PENDING_TRACK_KEY, input);
+          router.push("/auth/signin");
           return;
         }
         throw new Error(json?.error || "Failed to track product");
@@ -115,15 +111,78 @@ export default function HomePage() {
       return;
     }
 
+    // If signed out, save and send them to the sign-in page
     if (!userRef.current) {
       toast.error("Please sign in to track products.");
       sessionStorage.setItem(PENDING_TRACK_KEY, input);
-      setShowSignIn(true);
+      router.push("/auth/signin");
       return;
     }
 
     await trackUrl(input);
   }
+
+  // ✅ Boot session + load products
+  useEffect(() => {
+    let alive = true;
+
+    async function boot() {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const u = data?.session?.user ?? null;
+        if (!alive) return;
+
+        setUser(u);
+
+        // If logged in, load products
+        if (u) {
+          await loadProductsViaApi({ silent: true });
+        }
+      } catch (e) {
+        console.error("❌ boot session failed:", e);
+      } finally {
+        if (alive) setBooting(false);
+      }
+    }
+
+    boot();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      const u = session?.user ?? null;
+      setUser(u);
+
+      // After sign-in, load products and auto-track pending URL (if any)
+      if (event === "SIGNED_IN" && u) {
+        await loadProductsViaApi({ silent: true });
+
+        const pending =
+          typeof window !== "undefined"
+            ? sessionStorage.getItem(PENDING_TRACK_KEY)
+            : null;
+
+        if (pending) {
+          sessionStorage.removeItem(PENDING_TRACK_KEY);
+          // Track the pending URL
+          await trackUrl(pending);
+          // Return to homepage if user was on /auth/signin
+          router.push("/");
+        }
+      }
+
+      // After sign out, clear products
+      if (event === "SIGNED_OUT") {
+        setProducts([]);
+      }
+    });
+
+    return () => {
+      alive = false;
+      subscription?.unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase]);
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-10">
@@ -182,8 +241,7 @@ export default function HomePage() {
         </div>
       ) : !user ? (
         <p className="text-gray-500 text-center">
-          Paste an eBay link and click <b>Track</b> to start observing price
-          history.
+          Paste an eBay link and click <b>Track</b>. We’ll ask you to sign in.
         </p>
       ) : refreshing ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
