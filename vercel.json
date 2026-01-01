@@ -5,7 +5,7 @@
       "schedule": "0 * * * *"
     },
     {
-      "path": "/api/cron/send-emails",
+      "path": "/api/cron/send-alerts",
       "schedule": "*/5 * * * *"
     }
   ]
