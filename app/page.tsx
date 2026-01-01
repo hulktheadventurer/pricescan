@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import ProductCard from "@/components/ProductCard";
 
@@ -10,8 +9,6 @@ function isAliExpressUrl(u: string) {
   return /aliexpress\./i.test(u);
 }
 
-// When user clicks Track while signed-out, store the URL here.
-// After they sign in, we auto-track it.
 const PENDING_TRACK_KEY = "pricescan_pending_track_url";
 
 function SkeletonCard() {
@@ -27,7 +24,6 @@ function SkeletonCard() {
 
 export default function HomePage() {
   const supabase = useMemo(() => createClientComponentClient(), []);
-  const router = useRouter();
 
   const [url, setUrl] = useState("");
   const [tracking, setTracking] = useState(false);
@@ -38,11 +34,20 @@ export default function HomePage() {
   const [user, setUser] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
 
-  // Keep a ref so async handlers always read the latest user value
+  // ✅ Restore the old "email box" sign-in UX
+  const [showSignIn, setShowSignIn] = useState(false);
+  const [email, setEmail] = useState("");
+  const [sending, setSending] = useState(false);
+
   const userRef = useRef<any>(null);
   useEffect(() => {
     userRef.current = user;
   }, [user]);
+
+  const redirectTo =
+    process.env.NEXT_PUBLIC_SITE_URL
+      ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/finish`
+      : `${typeof window !== "undefined" ? window.location.origin : ""}/auth/finish`;
 
   async function loadProductsViaApi({ silent }: { silent?: boolean } = {}) {
     if (!silent) setRefreshing(true);
@@ -85,10 +90,10 @@ export default function HomePage() {
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (res.status === 401) {
-          toast.error("Please sign in to track products.");
-          // Save and redirect to signin
+          // ✅ Old behaviour: show email box, don’t redirect anywhere
           sessionStorage.setItem(PENDING_TRACK_KEY, input);
-          router.push("/auth/signin");
+          toast.error("Please sign in to track products.");
+          setShowSignIn(true);
           return;
         }
         throw new Error(json?.error || "Failed to track product");
@@ -111,18 +116,43 @@ export default function HomePage() {
       return;
     }
 
-    // If signed out, save and send them to the sign-in page
+    // ✅ If signed out: open email box (no /auth/signin page)
     if (!userRef.current) {
-      toast.error("Please sign in to track products.");
       sessionStorage.setItem(PENDING_TRACK_KEY, input);
-      router.push("/auth/signin");
+      toast.error("Please sign in to track products.");
+      setShowSignIn(true);
       return;
     }
 
     await trackUrl(input);
   }
 
-  // ✅ Boot session + load products
+  async function sendMagicLink() {
+    const e = email.trim();
+    if (!e) {
+      toast.error("Enter your email first.");
+      return;
+    }
+
+    setSending(true);
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email: e,
+        options: { emailRedirectTo: redirectTo },
+      });
+
+      if (error) throw error;
+
+      toast.success("Magic link sent. Check your email.");
+    } catch (err: any) {
+      console.error("❌ signInWithOtp error:", err);
+      toast.error(err?.message || "Failed to send magic link.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  // ✅ Restore boot/auth wiring so page knows signed-in state and stops skeletons
   useEffect(() => {
     let alive = true;
 
@@ -131,12 +161,16 @@ export default function HomePage() {
         const { data } = await supabase.auth.getSession();
         const u = data?.session?.user ?? null;
         if (!alive) return;
-
         setUser(u);
 
-        // If logged in, load products
         if (u) {
           await loadProductsViaApi({ silent: true });
+          // Auto-track pending URL after refresh/login if it exists
+          const pending = sessionStorage.getItem(PENDING_TRACK_KEY);
+          if (pending) {
+            sessionStorage.removeItem(PENDING_TRACK_KEY);
+            await trackUrl(pending);
+          }
         }
       } catch (e) {
         console.error("❌ boot session failed:", e);
@@ -153,25 +187,17 @@ export default function HomePage() {
       const u = session?.user ?? null;
       setUser(u);
 
-      // After sign-in, load products and auto-track pending URL (if any)
       if (event === "SIGNED_IN" && u) {
+        setShowSignIn(false);
         await loadProductsViaApi({ silent: true });
 
-        const pending =
-          typeof window !== "undefined"
-            ? sessionStorage.getItem(PENDING_TRACK_KEY)
-            : null;
-
+        const pending = sessionStorage.getItem(PENDING_TRACK_KEY);
         if (pending) {
           sessionStorage.removeItem(PENDING_TRACK_KEY);
-          // Track the pending URL
           await trackUrl(pending);
-          // Return to homepage if user was on /auth/signin
-          router.push("/");
         }
       }
 
-      // After sign out, clear products
       if (event === "SIGNED_OUT") {
         setProducts([]);
       }
@@ -241,7 +267,7 @@ export default function HomePage() {
         </div>
       ) : !user ? (
         <p className="text-gray-500 text-center">
-          Paste an eBay link and click <b>Track</b>. We’ll ask you to sign in.
+          Paste an eBay link and click <b>Track</b>.
         </p>
       ) : refreshing ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -257,6 +283,48 @@ export default function HomePage() {
           {products.map((p) => (
             <ProductCard key={p.id} product={p} />
           ))}
+        </div>
+      )}
+
+      {/* SIGN IN MODAL (restored old "email box") */}
+      {showSignIn && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-2xl bg-white border shadow-lg p-6">
+            <h3 className="text-xl font-semibold mb-2">Sign in to continue</h3>
+            <p className="text-gray-600 text-sm mb-4">
+              Enter your email and we’ll send you a magic link.
+            </p>
+
+            <div className="flex gap-3">
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="flex-1 border rounded px-4 py-2"
+                autoComplete="email"
+              />
+              <button
+                onClick={sendMagicLink}
+                disabled={sending}
+                className="bg-blue-600 text-white px-5 py-2 rounded hover:bg-blue-700 disabled:opacity-60"
+              >
+                {sending ? "Sending…" : "Send link"}
+              </button>
+            </div>
+
+            <div className="mt-4 flex items-center justify-between text-sm">
+              <button
+                onClick={() => setShowSignIn(false)}
+                className="text-gray-600 hover:underline"
+              >
+                Cancel
+              </button>
+              <span className="text-gray-400">
+                You’ll return automatically after signing in.
+              </span>
+            </div>
+          </div>
         </div>
       )}
     </div>
