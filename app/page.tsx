@@ -34,7 +34,6 @@ export default function HomePage() {
   const [user, setUser] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
 
-  // ✅ sign-in modal
   const [showSignIn, setShowSignIn] = useState(false);
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
@@ -44,26 +43,23 @@ export default function HomePage() {
     userRef.current = user;
   }, [user]);
 
-  // ✅ IMPORTANT: redirect to /auth/finish (NOT /auth/callback)
   const redirectTo =
     process.env.NEXT_PUBLIC_SITE_URL
       ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/finish`
-      : `${typeof window !== "undefined" ? window.location.origin : ""}/auth/finish`;
+      : `${
+          typeof window !== "undefined" ? window.location.origin : ""
+        }/auth/finish`;
 
   async function loadProductsViaApi({ silent }: { silent?: boolean } = {}) {
     if (!silent) setRefreshing(true);
-
     try {
       const res = await fetch("/api/products", { cache: "no-store" });
-
       if (res.status === 401) {
         setProducts([]);
         return;
       }
-
       const json = await res.json();
       if (!json?.ok) throw new Error(json?.error || "failed_products");
-
       setProducts(json.items ?? []);
     } catch (e: any) {
       console.error("❌ /api/products failed:", e);
@@ -104,139 +100,11 @@ export default function HomePage() {
 
       toast.success("Product added.");
       setUrl("");
-
       await loadProductsViaApi();
     } catch (err: any) {
       toast.error(err?.message || "Something went wrong.");
     } finally {
       setTracking(false);
-    }
-  }
-
-  function runPendingTrackInBackground() {
-    const pending = sessionStorage.getItem(PENDING_TRACK_KEY) || "";
-    if (!pending) return;
-
-    sessionStorage.removeItem(PENDING_TRACK_KEY);
-
-    setTimeout(() => {
-      if (!userRef.current) return;
-      trackUrl(pending);
-    }, 50);
-  }
-
-  // ✅ Cross-tab refresh: listen for SIGNED_IN broadcast
-  useEffect(() => {
-    let bc: BroadcastChannel | null = null;
-
-    const refresh = () => {
-      loadProductsViaApi({ silent: true });
-    };
-
-    try {
-      bc = new BroadcastChannel("pricescan-auth");
-      bc.onmessage = (msg) => {
-        if (msg?.data?.type === "SIGNED_IN") refresh();
-      };
-    } catch {}
-
-    window.addEventListener("pricescan-auth-signed-in", refresh as any);
-
-    return () => {
-      if (bc) bc.close();
-      window.removeEventListener("pricescan-auth-signed-in", refresh as any);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function init() {
-      setBooting(true);
-
-      const { data: s1 } = await supabase.auth.getSession();
-      if (!mounted) return;
-
-      const u1 = s1.session?.user ?? null;
-      setUser(u1);
-
-      if (!u1) {
-        const { data: u2 } = await supabase.auth.getUser();
-        if (!mounted) return;
-        setUser(u2.user ?? null);
-      }
-
-      await loadProductsViaApi({ silent: true });
-
-      setBooting(false);
-
-      runPendingTrackInBackground();
-    }
-
-    init();
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const u = session?.user ?? null;
-      setUser(u);
-
-      if (u) {
-        setShowSignIn(false);
-        await loadProductsViaApi();
-        runPendingTrackInBackground();
-      } else {
-        setProducts([]);
-        sessionStorage.removeItem(PENDING_TRACK_KEY);
-        setBooting(false);
-      }
-    });
-
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
-  }, [supabase]);
-
-  useEffect(() => {
-    const open = () => setShowSignIn(true);
-    window.addEventListener("pricescan-open-signin", open as any);
-    return () => window.removeEventListener("pricescan-open-signin", open as any);
-  }, []);
-
-  useEffect(() => {
-    const onSignedOut = () => {
-      setUser(null);
-      setProducts([]);
-      setShowSignIn(false);
-      sessionStorage.removeItem(PENDING_TRACK_KEY);
-      setBooting(false);
-    };
-    window.addEventListener("pricescan-signed-out", onSignedOut as any);
-    return () =>
-      window.removeEventListener("pricescan-signed-out", onSignedOut as any);
-  }, []);
-
-  async function sendMagicLink() {
-    const e = email.trim().toLowerCase();
-    if (!e) return toast.error("Enter your email.");
-
-    setSending(true);
-    try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email: e,
-        options: { emailRedirectTo: redirectTo },
-      });
-
-      if (error) throw error;
-
-      toast.success("Magic link sent — check your email.");
-      setEmail("");
-    } catch (err: any) {
-      toast.error(err?.message || "Failed to send magic link.");
-    } finally {
-      setSending(false);
     }
   }
 
@@ -259,70 +127,54 @@ export default function HomePage() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-10">
-      {/* ✅ SIGN-IN MODAL */}
-      {showSignIn && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setShowSignIn(false)}
-          />
-          <div className="relative bg-white w-[92%] max-w-md rounded-2xl shadow-xl border p-6">
-            <div className="text-xl font-semibold mb-2">Sign in to PriceScan</div>
-            <div className="text-sm text-gray-600 mb-4">
-              Enter your email and we’ll send you a magic link.
-            </div>
-
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Enter email to sign in"
-              className="w-full border rounded px-3 py-2 mb-3"
-              autoFocus
-            />
-
-            <div className="flex gap-3">
-              <button
-                onClick={sendMagicLink}
-                disabled={sending}
-                className="flex-1 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-60"
-              >
-                {sending ? "Sending…" : "Send magic link"}
-              </button>
-              <button
-                onClick={() => setShowSignIn(false)}
-                className="flex-1 bg-gray-200 px-4 py-2 rounded hover:bg-gray-300"
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="text-xs text-gray-500 mt-3">
-              After clicking the link in your email, you’ll be signed in here.
-            </div>
-          </div>
-        </div>
-      )}
-
-      <h1 className="text-3xl font-bold mb-6">🔎 PriceScan — Track Product Prices</h1>
-
-      <div className="flex gap-3 mb-10">
-        <input
-          type="text"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste an eBay link…"
-          className="flex-1 border rounded px-4 py-2"
-        />
-        <button
-          onClick={handleTrack}
-          disabled={tracking}
-          className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 disabled:opacity-60"
-        >
-          {tracking ? "Tracking…" : "Track"}
-        </button>
+      {/* HERO */}
+      <div className="mb-10 text-center">
+        <h1 className="text-3xl md:text-4xl font-bold mb-4">
+          Think before you buy.
+        </h1>
+        <p className="text-gray-600 max-w-2xl mx-auto">
+          PriceScan shows real price history so you can tell whether today’s
+          “deal” is actually cheap — or just marketing noise.
+        </p>
       </div>
 
+      {/* INPUT + LINK */}
+      <div className="mb-8">
+        <div className="flex gap-3">
+          <input
+            type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="Paste an eBay product link…"
+            className="flex-1 border rounded px-4 py-2"
+          />
+          <button
+            onClick={handleTrack}
+            disabled={tracking}
+            className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 disabled:opacity-60"
+          >
+            {tracking ? "Tracking…" : "Track"}
+          </button>
+        </div>
+
+        <div className="mt-2 text-sm text-gray-500">
+          <a href="/ebay-price-tracker" className="hover:underline">
+            Learn why PriceScan is different from eBay alerts →
+          </a>
+        </div>
+      </div>
+
+      {/* WHY */}
+      <div className="bg-gray-50 border rounded-2xl p-6 mb-12">
+        <h2 className="text-lg font-semibold mb-3">Why PriceScan?</h2>
+        <ul className="text-gray-600 space-y-2 text-sm">
+          <li>• See historical prices, not just today’s number</li>
+          <li>• Avoid impulse buys caused by fake discounts</li>
+          <li>• Get alerts only for meaningful price drops</li>
+        </ul>
+      </div>
+
+      {/* CONTENT */}
       {booting ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <SkeletonCard />
@@ -330,8 +182,8 @@ export default function HomePage() {
         </div>
       ) : !user ? (
         <p className="text-gray-500 text-center">
-          Paste an eBay link and click <b>Track</b>. Then compare similar items on Amazon and
-          AliExpress.
+          Paste an eBay link and click <b>Track</b> to start observing price
+          history.
         </p>
       ) : refreshing ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -339,7 +191,9 @@ export default function HomePage() {
           <SkeletonCard />
         </div>
       ) : products.length === 0 ? (
-        <p className="text-gray-500 text-center">No items yet — track something!</p>
+        <p className="text-gray-500 text-center">
+          No items yet — track something you’re thinking of buying.
+        </p>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {products.map((p) => (
