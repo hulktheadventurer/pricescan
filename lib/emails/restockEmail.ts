@@ -13,6 +13,25 @@ interface RestockEmailParams {
   currency?: string | null;
 }
 
+function escapeHtml(str: string) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatMoney(amount: number, currency: string) {
+  try {
+    return new Intl.NumberFormat("en-GB", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    return `${amount.toFixed(2)} ${currency}`;
+  }
+}
+
 export async function sendRestockEmail(params: RestockEmailParams) {
   const { to, productTitle, productUrl, latestPrice, currency } = params;
 
@@ -22,31 +41,48 @@ export async function sendRestockEmail(params: RestockEmailParams) {
   }
 
   const affiliateUrl = getEbayAffiliateLink(productUrl);
+  const safeTitle = escapeHtml(productTitle || "Tracked item");
 
   const prettyPrice =
-    latestPrice != null && currency
-      ? `${currency} ${latestPrice.toFixed(2)}`
+    typeof latestPrice === "number" &&
+    Number.isFinite(latestPrice) &&
+    currency
+      ? formatMoney(latestPrice, currency)
       : null;
 
-  const subject = `✅ Back in stock: ${productTitle}`;
+  // ✅ calmer subject, consistent with PriceDrop
+  const subject = `PriceScan: Back in stock — "${productTitle || "your tracked item"}"`;
+
   const html = `
-    <div style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 16px;">
-      <h2 style="margin-bottom: 8px;">It's back in stock!</h2>
-      <p style="margin: 0 0 8px 0;">
-        An item you were tracking on <b>PriceScan</b> is available again on eBay.
+    <div style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 16px; line-height: 1.5;">
+      <h2 style="margin: 0 0 10px 0;">Back in stock</h2>
+
+      <p style="margin: 0 0 14px 0; color: #374151;">
+        Your tracked item is available again. If you're still interested, take a calm look and decide.
       </p>
 
-      <h3 style="margin: 16px 0 8px 0;">${escapeHtml(productTitle)}</h3>
+      <h3 style="margin: 14px 0 8px 0;">${safeTitle}</h3>
 
       ${
         prettyPrice
-          ? `<p style="margin: 0 0 4px 0;">Current price: <b>${prettyPrice}</b></p>`
+          ? `
+          <div style="margin: 10px 0 0 0; padding: 12px; border: 1px solid #e5e7eb; border-radius: 12px;">
+            <p style="margin: 0;">
+              <span style="color:#6b7280;">Current price:</span>
+              <b>${prettyPrice}</b>
+            </p>
+          </div>
+        `
           : ""
       }
 
+      <p style="margin: 14px 0; color:#374151;">
+        Tip: PriceScan is designed to help you <b>think and observe before buying</b> — check the price history if you're unsure.
+      </p>
+
       <p style="margin: 16px 0;">
-        <a 
-          href="${affiliateUrl}" 
+        <a
+          href="${affiliateUrl}"
           style="
             display:inline-block;
             background:#16a34a;
@@ -93,11 +129,4 @@ export async function sendRestockEmail(params: RestockEmailParams) {
   } catch (err) {
     console.error("❌ Failed to send restock email via Resend:", err);
   }
-}
-
-function escapeHtml(str: string) {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }

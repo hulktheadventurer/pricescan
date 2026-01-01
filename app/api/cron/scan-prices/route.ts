@@ -44,6 +44,30 @@ async function fetchEbayItem(sku: string) {
   };
 }
 
+// ---------- Helpers (noise filtering) ----------
+function parseEnvFloat(name: string, fallback: number) {
+  const raw = process.env[name];
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Minimum drop percent to queue a PRICE_DROP alert.
+ * Default: 5 (%)
+ * Override via env: PRICESCAN_MIN_DROP_PCT=5
+ */
+const MIN_DROP_PCT = parseEnvFloat("PRICESCAN_MIN_DROP_PCT", 5);
+
+function isCurrencyMismatch(prevCurrency: string | null, newCurrency: string | null) {
+  if (!prevCurrency || !newCurrency) return false;
+  return prevCurrency.toUpperCase() !== newCurrency.toUpperCase();
+}
+
+function dropPercent(oldPrice: number, newPrice: number) {
+  if (!Number.isFinite(oldPrice) || oldPrice <= 0) return 0;
+  return ((oldPrice - newPrice) / oldPrice) * 100;
+}
+
 // CRON ENTRY
 export async function GET() {
   const startedAt = new Date().toISOString();
@@ -55,12 +79,17 @@ export async function GET() {
 
   if (prodErr) {
     console.error("❌ Failed to fetch tracked_products:", prodErr);
-    return NextResponse.json({ ok: false, startedAt, error: prodErr.message }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, startedAt, error: prodErr.message },
+      { status: 500 }
+    );
   }
 
   if (!products?.length) return NextResponse.json({ ok: true, startedAt, scanned: 0 });
 
   let scanned = 0;
+  let currencyMismatchSkips = 0;
+  let priceDropQueued = 0;
 
   // store old statuses to detect restock
   const previousStatus: Record<string, string> = {};
@@ -69,12 +98,13 @@ export async function GET() {
   const statusUpdates: Array<{ id: string; status: EbayStatus }> = [];
   const priceInserts: Array<{ product_id: string; price: number; currency: string }> = [];
 
-  // We'll queue alerts in bulk too
+  // ✅ IMPORTANT: cron_alert_queue uses `alert_type` (not `type`)
   const alertInserts: Array<{
     product_id: string;
-    type: "PRICE_DROP" | "RESTOCK";
+    alert_type: "PRICE_DROP" | "RESTOCK";
     old_price?: number | null;
     new_price?: number | null;
+    currency?: string | null;
   }> = [];
 
   for (const p of products) {
@@ -90,6 +120,7 @@ export async function GET() {
       .maybeSingle();
 
     const prevPrice = prevSnap?.price ?? null;
+    const prevCurrency = (prevSnap?.currency ?? null) as string | null;
 
     const item = await fetchEbayItem(p.sku);
     scanned++;
@@ -109,14 +140,29 @@ export async function GET() {
         currency: item.currency,
       });
 
-      // PRICE DROP detection: compare to previous latest snapshot
-      if (prevPrice != null && item.price < prevPrice) {
-        alertInserts.push({
-          product_id: p.id,
-          type: "PRICE_DROP",
-          old_price: prevPrice,
-          new_price: item.price,
-        });
+      // ✅ PRICE DROP detection:
+      // - only compare if previous exists
+      // - never compare across currencies
+      // - require meaningful drop %
+      if (prevPrice != null) {
+        const mismatch = isCurrencyMismatch(prevCurrency, item.currency);
+
+        if (mismatch) {
+          currencyMismatchSkips++;
+        } else if (item.price < prevPrice) {
+          const pct = dropPercent(prevPrice, item.price);
+
+          if (pct >= MIN_DROP_PCT) {
+            alertInserts.push({
+              product_id: p.id,
+              alert_type: "PRICE_DROP",
+              old_price: prevPrice,
+              new_price: item.price,
+              currency: item.currency,
+            });
+            priceDropQueued++;
+          }
+        }
       }
     }
   }
@@ -145,12 +191,12 @@ export async function GET() {
     if (oldS === "SOLD_OUT" && newS === "ACTIVE") {
       alertInserts.push({
         product_id: s.id,
-        type: "RESTOCK",
+        alert_type: "RESTOCK",
       });
     }
   }
 
-  // Insert alerts (this is what powers email sending)
+  // Insert alerts (powers send-alerts)
   if (alertInserts.length > 0) {
     const { error: alertErr } = await supabaseAdmin.from("cron_alert_queue").insert(alertInserts);
     if (alertErr) console.error("❌ cron_alert_queue insert error:", alertErr);
@@ -163,5 +209,8 @@ export async function GET() {
     pricesSaved: priceInserts.length,
     statusUpdated: statusUpdates.length,
     alertsQueued: alertInserts.length,
+    priceDropQueued,
+    currencyMismatchSkips,
+    minDropPct: MIN_DROP_PCT,
   });
 }

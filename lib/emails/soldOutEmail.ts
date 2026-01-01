@@ -11,29 +11,45 @@ interface SoldOutEmailParams {
   productUrl: string;
 }
 
+function escapeHtml(str: string) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 export async function sendSoldOutEmail(params: SoldOutEmailParams) {
   const { to, productTitle, productUrl } = params;
 
   if (!RESEND_API_KEY) {
-    console.warn("⚠️ RESEND_API_KEY not set. Skipping sold out email.");
+    console.warn("⚠️ RESEND_API_KEY not set. Skipping sold-out email.");
     return;
   }
 
   const affiliateUrl = getEbayAffiliateLink(productUrl);
+  const safeTitle = escapeHtml(productTitle || "Tracked item");
 
-  const subject = `❌ No longer available: ${productTitle}`;
+  // ✅ calm, neutral subject
+  const subject = `PriceScan: Listing ended — "${productTitle || "your tracked item"}"`;
+
   const html = `
-    <div style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 16px;">
-      <h2 style="margin-bottom: 8px;">Item is no longer available</h2>
-      <p style="margin: 0 0 8px 0;">
-        An item you were tracking on <b>PriceScan</b> has been marked as sold out or ended.
+    <div style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 16px; line-height: 1.5;">
+      <h2 style="margin: 0 0 10px 0;">Listing ended</h2>
+
+      <p style="margin: 0 0 14px 0; color: #374151;">
+        The item you were tracking is no longer available on eBay.
       </p>
 
-      <h3 style="margin: 16px 0 8px 0;">${escapeHtml(productTitle)}</h3>
+      <h3 style="margin: 14px 0 8px 0;">${safeTitle}</h3>
+
+      <p style="margin: 14px 0; color:#374151;">
+        This can happen when a listing sells out or reaches its end date.
+        If you’re still interested, you may want to look for similar listings.
+      </p>
 
       <p style="margin: 16px 0;">
-        <a 
-          href="${affiliateUrl}" 
+        <a
+          href="${affiliateUrl}"
           style="
             display:inline-block;
             background:#6b7280;
@@ -73,18 +89,11 @@ export async function sendSoldOutEmail(params: SoldOutEmailParams) {
 
     if (!res.ok) {
       const text = await res.text();
-      console.error("❌ Resend API (sold out) error:", res.status, text);
+      console.error("❌ Resend API (sold-out) error:", res.status, text);
     } else {
       console.log(`📧 Sold-out email sent to ${to} for "${productTitle}"`);
     }
   } catch (err) {
     console.error("❌ Failed to send sold-out email via Resend:", err);
   }
-}
-
-function escapeHtml(str: string) {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }

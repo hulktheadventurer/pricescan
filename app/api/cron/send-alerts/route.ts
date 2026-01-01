@@ -18,25 +18,25 @@ interface AlertRow {
   created_at: string;
 }
 
+function pctDrop(oldPrice: number, newPrice: number) {
+  if (!Number.isFinite(oldPrice) || oldPrice <= 0) return 0;
+  return ((oldPrice - newPrice) / oldPrice) * 100;
+}
+
 export async function GET() {
   const startedAt = new Date().toISOString();
 
   // 1) Fetch pending alerts
   const { data: alerts, error } = await supabaseAdmin
     .from("cron_alert_queue")
-    .select(
-      "id, user_id, product_id, alert_type, old_price, new_price, currency, created_at"
-    )
+    .select("id, user_id, product_id, alert_type, old_price, new_price, currency, created_at")
     .is("processed_at", null)
     .order("created_at", { ascending: true })
     .limit(100);
 
   if (error) {
     console.error("❌ cron_alert_queue fetch error:", error);
-    return NextResponse.json(
-      { ok: false, error: error.message },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
 
   if (!alerts || alerts.length === 0) {
@@ -46,9 +46,7 @@ export async function GET() {
   const typedAlerts = alerts as AlertRow[];
 
   // 2) Fetch product info in one query
-  const productIds = Array.from(
-    new Set(typedAlerts.map((a) => a.product_id))
-  );
+  const productIds = Array.from(new Set(typedAlerts.map((a) => a.product_id)));
 
   const { data: products, error: prodErr } = await supabaseAdmin
     .from("tracked_products")
@@ -59,11 +57,7 @@ export async function GET() {
     console.error("❌ tracked_products fetch error:", prodErr);
   }
 
-  const productMap: Record<
-    string,
-    { id: string; title: string; url: string; merchant: string | null }
-  > = {};
-
+  const productMap: Record<string, { id: string; title: string; url: string; merchant: string | null }> = {};
   (products || []).forEach((p: any) => {
     productMap[p.id] = {
       id: p.id,
@@ -77,14 +71,10 @@ export async function GET() {
   const userEmailCache: Record<string, string | null> = {};
 
   async function getUserEmail(userId: string): Promise<string | null> {
-    if (userEmailCache[userId] !== undefined) {
-      return userEmailCache[userId];
-    }
+    if (userEmailCache[userId] !== undefined) return userEmailCache[userId];
 
     try {
-      const { data, error } = await supabaseAdmin.auth.admin.getUserById(
-        userId
-      );
+      const { data, error } = await supabaseAdmin.auth.admin.getUserById(userId);
 
       if (error || !data?.user) {
         console.error("❌ getUserById error:", error);
@@ -111,20 +101,14 @@ export async function GET() {
 
     if (!product) {
       console.warn("⚠️ Missing product for alert", alert.id, alert.product_id);
-      errorUpdates.push({
-        id: alert.id,
-        error: "Missing product in tracked_products",
-      });
+      errorUpdates.push({ id: alert.id, error: "Missing product in tracked_products" });
       continue;
     }
 
     const email = await getUserEmail(alert.user_id);
     if (!email) {
       console.warn("⚠️ Missing email for user", alert.user_id);
-      errorUpdates.push({
-        id: alert.id,
-        error: "Missing user email",
-      });
+      errorUpdates.push({ id: alert.id, error: "Missing user email" });
       continue;
     }
 
@@ -136,6 +120,8 @@ export async function GET() {
           throw new Error("Missing old/new price for PRICE_DROP alert");
         }
 
+        const dropPct = pctDrop(alert.old_price, alert.new_price);
+
         await sendPriceDropEmail({
           to: email,
           productTitle: product.title,
@@ -143,6 +129,7 @@ export async function GET() {
           oldPrice: alert.old_price,
           newPrice: alert.new_price,
           currency: safeCurrency,
+          dropPercent: dropPct, // ✅ new field we’ll use in the email copy
         });
       }
 
@@ -152,7 +139,7 @@ export async function GET() {
           productTitle: product.title,
           productUrl: product.url,
           latestPrice: alert.new_price ?? null,
-          currency: alert.currency ?? null,
+          currency: safeCurrency, // ✅ always pass safeCurrency
         });
       }
 
@@ -167,10 +154,7 @@ export async function GET() {
       successIds.push(alert.id);
     } catch (err: any) {
       console.error("❌ Failed to send alert email:", alert.id, err);
-      errorUpdates.push({
-        id: alert.id,
-        error: String(err?.message || err),
-      });
+      errorUpdates.push({ id: alert.id, error: String(err?.message || err) });
     }
   }
 
@@ -185,10 +169,7 @@ export async function GET() {
       .in("id", successIds);
 
     if (updErr) {
-      console.error(
-        "❌ Failed to mark alerts as processed in cron_alert_queue:",
-        updErr
-      );
+      console.error("❌ Failed to mark alerts as processed in cron_alert_queue:", updErr);
     }
   }
 
