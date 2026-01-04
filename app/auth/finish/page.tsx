@@ -5,11 +5,9 @@ import { useEffect } from "react";
 export default function AuthFinishPage() {
   useEffect(() => {
     const url = new URL(window.location.href);
-
-    // Supabase sends ?code=... (PKCE) in the URL
     const code = url.searchParams.get("code");
 
-    // Notify other tabs ASAP (so old tab refreshes products)
+    // ✅ Notify other tabs ASAP so they refresh products/UI
     try {
       const bc = new BroadcastChannel("pricescan-auth");
       bc.postMessage({ type: "SIGNED_IN" });
@@ -18,14 +16,12 @@ export default function AuthFinishPage() {
 
     window.dispatchEvent(new CustomEvent("pricescan-auth-signed-in"));
 
-    // Now send this tab to the server route that actually exchanges the code + sets cookies
-    // (Your existing route.ts at /auth/callback will handle it and redirect to "/")
+    // ✅ Forward to server route that exchanges code + sets cookies
     if (code) {
       window.location.replace(`/auth/callback?code=${encodeURIComponent(code)}`);
       return;
     }
 
-    // If no code present, just go home
     window.location.replace("/");
   }, []);
 

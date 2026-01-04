@@ -89,10 +89,12 @@ export default function Header() {
 
     setSending(true);
     try {
-      const redirectTo =
-        process.env.NEXT_PUBLIC_SITE_URL
-          ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`
-          : `${window.location.origin}/auth/callback`;
+      const base =
+        process.env.NEXT_PUBLIC_BASE_URL ||
+        (typeof window !== "undefined" ? window.location.origin : "");
+
+      // ✅ Use the same path as homepage modal: /auth/finish
+      const redirectTo = `${base.replace(/\/$/, "")}/auth/finish`;
 
       const { error } = await supabase.auth.signInWithOtp({
         email: e,
@@ -115,16 +117,12 @@ export default function Header() {
     setSigningOut(true);
 
     try {
-      // ✅ IMPORTANT: server signout clears httpOnly cookies
       const res = await fetch("/auth/signout", { method: "POST" });
       if (!res.ok) throw new Error("Sign out failed");
 
-      // also tell pages to clear local state
       window.dispatchEvent(new CustomEvent("pricescan-signed-out"));
-
       toast.success("Signed out.");
 
-      // hard reload to ensure UI is clean
       router.refresh();
       window.location.assign("/");
     } catch (err: any) {
@@ -178,6 +176,7 @@ export default function Header() {
                 className="border rounded px-2 py-1 text-sm w-56"
               />
               <button
+                type="button"
                 onClick={sendMagicLink}
                 disabled={sending}
                 className="bg-blue-600 text-white text-sm px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-60"
