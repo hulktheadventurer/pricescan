@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
@@ -93,7 +94,6 @@ export default function Header() {
         process.env.NEXT_PUBLIC_BASE_URL ||
         (typeof window !== "undefined" ? window.location.origin : "");
 
-      // ✅ Use the same path as homepage modal: /auth/finish
       const redirectTo = `${base.replace(/\/$/, "")}/auth/finish`;
 
       const { error } = await supabase.auth.signInWithOtp({
@@ -135,8 +135,17 @@ export default function Header() {
   return (
     <header className="w-full border-b bg-white">
       <div className="max-w-6xl mx-auto flex justify-between items-center py-4 px-4">
-        <Link href="/" className="text-xl font-semibold flex items-center space-x-2">
-          <span role="img">📈</span>
+        <Link
+          href="/"
+          className="text-xl font-semibold flex items-center space-x-2"
+        >
+          <Image
+            src="/favicon-32x32.png"
+            alt="PriceScan"
+            width={22}
+            height={22}
+            priority
+          />
           <span>PriceScan</span>
         </Link>
 
@@ -146,13 +155,17 @@ export default function Header() {
             <select
               className="border p-1 rounded-md text-sm"
               value={currency}
-              onChange={(e) => handleCurrencyChange(e.target.value as CurrencyCode)}
+              onChange={(e) =>
+                handleCurrencyChange(e.target.value as CurrencyCode)
+              }
             >
-              {SUPPORTED_CURRENCIES.slice().sort().map((code) => (
-                <option key={code} value={code}>
-                  {code}
-                </option>
-              ))}
+              {SUPPORTED_CURRENCIES.slice()
+                .sort()
+                .map((code) => (
+                  <option key={code} value={code}>
+                    {code}
+                  </option>
+                ))}
             </select>
           </div>
 

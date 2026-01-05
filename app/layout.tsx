@@ -7,9 +7,11 @@ export const metadata = {
   title: "PriceScan — Track Prices Instantly",
   description: "Track product prices across eBay and more.",
   icons: {
-    icon: "/favicon.ico",          // ✅ uses public/favicon.ico
-    shortcut: "/favicon.ico",
-    apple: "/apple-touch-icon.png" // optional, only if you have it
+    icon: [
+      { url: "/favicon.ico" },
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+    ],
   },
 };
 
