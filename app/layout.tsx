@@ -6,6 +6,11 @@ import { Toaster } from "sonner";
 export const metadata = {
   title: "PriceScan — Track Prices Instantly",
   description: "Track product prices across eBay and more.",
+  icons: {
+    icon: "/favicon.ico",          // ✅ uses public/favicon.ico
+    shortcut: "/favicon.ico",
+    apple: "/apple-touch-icon.png" // optional, only if you have it
+  },
 };
 
 export default function RootLayout({
@@ -21,12 +26,8 @@ export default function RootLayout({
 
       <body className="min-h-screen flex flex-col font-sans bg-gray-50 text-gray-900">
         <Header />
-
         <main className="flex-1">{children}</main>
-
         <Footer />
-
-        {/* Global toast notifications */}
         <Toaster richColors position="top-center" />
       </body>
     </html>
