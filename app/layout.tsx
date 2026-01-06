@@ -26,11 +26,14 @@ export default function RootLayout({
       <head>
         <meta name="verify-admitad" content="0e8bbbb3bf" />
 
-        {/* ✅ Fix mobile scaling/layout */}
+        {/* ✅ Mobile scaling */}
         <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-        {/* ✅ Prevent Android/Chrome "auto darkening" */}
+        {/* ✅ Force light mode (prevents Android auto dark mode) */}
         <meta name="color-scheme" content="light" />
+
+        {/* ✅ REQUIRED for Bubblewrap / Android TWA */}
+        <link rel="manifest" href="/manifest.json" />
       </head>
 
       <body className="min-h-screen flex flex-col font-sans bg-gray-50 text-gray-900">
