@@ -47,7 +47,9 @@ export default function HomePage() {
   const redirectTo =
     process.env.NEXT_PUBLIC_SITE_URL
       ? `${process.env.NEXT_PUBLIC_SITE_URL}/auth/finish`
-      : `${typeof window !== "undefined" ? window.location.origin : ""}/auth/finish`;
+      : `${
+          typeof window !== "undefined" ? window.location.origin : ""
+        }/auth/finish`;
 
   async function loadProductsViaApi({ silent }: { silent?: boolean } = {}) {
     if (!silent) setRefreshing(true);
@@ -211,13 +213,13 @@ export default function HomePage() {
   }, [supabase]);
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-10">
+    <div className="max-w-6xl mx-auto px-4 py-8 sm:py-10">
       {/* HERO */}
-      <div className="mb-10 text-center">
-        <h1 className="text-3xl md:text-4xl font-bold mb-4">
+      <div className="mb-8 sm:mb-10 text-center">
+        <h1 className="text-3xl sm:text-4xl md:text-4xl font-bold mb-3 sm:mb-4 leading-tight">
           Think before you buy.
         </h1>
-        <p className="text-gray-600 max-w-2xl mx-auto">
+        <p className="text-gray-600 max-w-2xl mx-auto text-base sm:text-lg leading-relaxed">
           PriceScan shows real price history so you can tell whether today’s
           “deal” is actually cheap — or just marketing noise.
         </p>
@@ -225,24 +227,24 @@ export default function HomePage() {
 
       {/* INPUT + LINK */}
       <div className="mb-8">
-        <div className="flex gap-3">
+        <div className="flex flex-col sm:flex-row gap-3">
           <input
             type="text"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             placeholder="Paste an eBay product link…"
-            className="flex-1 border rounded px-4 py-2"
+            className="h-12 w-full sm:flex-1 border rounded-lg px-4 bg-white text-gray-900 placeholder-gray-400"
           />
           <button
             onClick={handleTrack}
             disabled={tracking}
-            className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 disabled:opacity-60"
+            className="h-12 w-full sm:w-auto bg-blue-600 text-white px-6 rounded-lg hover:bg-blue-700 disabled:opacity-60"
           >
             {tracking ? "Tracking…" : "Track"}
           </button>
         </div>
 
-        <div className="mt-2 text-sm text-gray-500">
+        <div className="mt-2 text-sm text-gray-500 text-center sm:text-left">
           <a href="/ebay-price-tracker" className="hover:underline">
             Learn why PriceScan is different from eBay alerts →
           </a>
@@ -250,9 +252,9 @@ export default function HomePage() {
       </div>
 
       {/* WHY */}
-      <div className="bg-gray-50 border rounded-2xl p-6 mb-12">
+      <div className="bg-white border rounded-2xl p-5 sm:p-6 mb-10 sm:mb-12 shadow-sm">
         <h2 className="text-lg font-semibold mb-3">Why PriceScan?</h2>
-        <ul className="text-gray-600 space-y-2 text-sm">
+        <ul className="text-gray-600 space-y-2 text-sm sm:text-base">
           <li>• See historical prices, not just today’s number</li>
           <li>• Avoid impulse buys caused by fake discounts</li>
           <li>• Get alerts only for meaningful price drops</li>
@@ -295,19 +297,19 @@ export default function HomePage() {
               Enter your email and we’ll send you a magic link.
             </p>
 
-            <div className="flex gap-3">
+            <div className="flex flex-col sm:flex-row gap-3">
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
-                className="flex-1 border rounded px-4 py-2"
+                className="h-12 w-full sm:flex-1 border rounded-lg px-4 bg-white text-gray-900 placeholder-gray-400"
                 autoComplete="email"
               />
               <button
                 onClick={sendMagicLink}
                 disabled={sending}
-                className="bg-blue-600 text-white px-5 py-2 rounded hover:bg-blue-700 disabled:opacity-60"
+                className="h-12 w-full sm:w-auto bg-blue-600 text-white px-5 rounded-lg hover:bg-blue-700 disabled:opacity-60"
               >
                 {sending ? "Sending…" : "Send link"}
               </button>

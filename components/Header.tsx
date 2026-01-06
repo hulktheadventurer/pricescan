@@ -134,68 +134,82 @@ export default function Header() {
 
   return (
     <header className="w-full border-b bg-white">
-      <div className="max-w-6xl mx-auto flex justify-between items-center py-4 px-4">
-        <Link href="/" className="flex items-center gap-2">
-          <Image
-            src="/logo.png"
-            alt="PriceScan"
-            width={44}
-            height={44}
-            priority
-            className="rounded-sm"
-          />
-          <span className="text-xl font-semibold">PriceScan</span>
-        </Link>
+      <div className="max-w-6xl mx-auto px-4 py-3">
+        {/* Mobile: stack. Desktop: row */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          {/* Brand */}
+          <Link href="/" className="flex items-center gap-2 min-w-0">
+            <Image
+              src="/logo.png"
+              alt="PriceScan"
+              width={40}
+              height={40}
+              priority
+              className="rounded-sm"
+            />
+            <span className="text-lg sm:text-xl font-semibold truncate">
+              PriceScan
+            </span>
+          </Link>
 
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-2">
-            <span className="text-gray-600 text-sm">Currency:</span>
-            <select
-              className="border p-1 rounded-md text-sm"
-              value={currency}
-              onChange={(e) =>
-                handleCurrencyChange(e.target.value as CurrencyCode)
-              }
-            >
-              {SUPPORTED_CURRENCIES.slice()
-                .sort()
-                .map((code) => (
-                  <option key={code} value={code}>
-                    {code}
-                  </option>
-                ))}
-            </select>
-          </div>
-
-          {user ? (
-            <>
-              <span className="text-gray-600 text-sm">{user.email}</span>
-              <button
-                onClick={signOut}
-                disabled={signingOut}
-                className="text-red-600 text-sm hover:underline disabled:opacity-60"
-              >
-                {signingOut ? "Signing out…" : "Sign Out"}
-              </button>
-            </>
-          ) : (
+          {/* Controls */}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+            {/* Currency */}
             <div className="flex items-center gap-2">
-              <input
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Enter email to sign in"
-                className="border rounded px-2 py-1 text-sm w-56"
-              />
-              <button
-                type="button"
-                onClick={sendMagicLink}
-                disabled={sending}
-                className="bg-blue-600 text-white text-sm px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-60"
+              <span className="text-gray-600 text-sm whitespace-nowrap">
+                Currency:
+              </span>
+              <select
+                className="h-10 border rounded-md text-sm px-2 bg-white text-gray-900"
+                value={currency}
+                onChange={(e) =>
+                  handleCurrencyChange(e.target.value as CurrencyCode)
+                }
               >
-                {sending ? "Sending…" : "Sign in"}
-              </button>
+                {SUPPORTED_CURRENCIES.slice()
+                  .sort()
+                  .map((code) => (
+                    <option key={code} value={code}>
+                      {code}
+                    </option>
+                  ))}
+              </select>
             </div>
-          )}
+
+            {user ? (
+              <div className="flex items-center justify-between gap-3 sm:justify-start">
+                <span className="text-gray-600 text-sm truncate max-w-[180px] sm:max-w-[240px]">
+                  {user.email}
+                </span>
+                <button
+                  onClick={signOut}
+                  disabled={signingOut}
+                  className="text-red-600 text-sm hover:underline disabled:opacity-60 whitespace-nowrap"
+                >
+                  {signingOut ? "Signing out…" : "Sign Out"}
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <input
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="Enter email to sign in"
+                  className="h-10 border rounded-md px-3 text-sm w-full sm:w-64 bg-white text-gray-900 placeholder-gray-400"
+                  autoComplete="email"
+                  inputMode="email"
+                />
+                <button
+                  type="button"
+                  onClick={sendMagicLink}
+                  disabled={sending}
+                  className="h-10 bg-blue-600 text-white text-sm px-4 rounded-md hover:bg-blue-700 disabled:opacity-60 whitespace-nowrap"
+                >
+                  {sending ? "Sending…" : "Sign in"}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </header>

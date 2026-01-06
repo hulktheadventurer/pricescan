@@ -25,6 +25,9 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <head>
         <meta name="verify-admitad" content="0e8bbbb3bf" />
+
+        {/* ✅ Fix mobile scaling/layout */}
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
       </head>
 
       <body className="min-h-screen flex flex-col font-sans bg-gray-50 text-gray-900">
@@ -33,7 +36,6 @@ export default function RootLayout({
         <Footer />
         <Toaster richColors position="top-center" />
 
-        {/* ✅ THIS IS THE IMPORTANT LINE */}
         <Analytics />
       </body>
     </html>

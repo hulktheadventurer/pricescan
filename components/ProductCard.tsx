@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import { toast } from "sonner";
 import {
   CurrencyCode,
   convertCurrency,
@@ -85,8 +86,7 @@ function buildEbayAffiliateUrl(rawUrl: string, merchant?: string | null) {
   if (!rawUrl) return rawUrl;
 
   const m = (merchant || "").toLowerCase();
-  const isEbay =
-    m.includes("ebay") || /(^|\.)ebay\./i.test(rawUrl);
+  const isEbay = m.includes("ebay") || /(^|\.)ebay\./i.test(rawUrl);
 
   // If not eBay or missing campid, just return original
   if (!isEbay || !EBAY_CAMPID) return rawUrl;
@@ -148,7 +148,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
     async function loadLatest() {
       if (!product?.id) return;
 
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("price_snapshots")
         .select("price, seen_at, currency")
         .eq("product_id", product.id)
@@ -157,6 +157,10 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         .maybeSingle();
 
       if (cancelled) return;
+      if (error) {
+        console.error("❌ loadLatest snapshot error:", error);
+        return;
+      }
 
       const row = data as SnapshotRow | null;
       const rawCurrency = String(row?.currency || "GBP").toUpperCase();
@@ -202,11 +206,14 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         .from("tracked_products")
         .delete()
         .eq("id", product.id);
+
       if (error) throw error;
+
+      toast.success("Removed.");
       window.dispatchEvent(new CustomEvent("pricescan-products-refresh"));
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      alert("Remove failed. Check console.");
+      toast.error(e?.message || "Remove failed.");
     } finally {
       setBusy(false);
     }
@@ -234,7 +241,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         </div>
       )}
 
-      <div className="font-semibold text-lg leading-snug mb-3 pr-20">
+      <div className="font-semibold text-base sm:text-lg leading-snug mb-3 pr-20">
         {product.title || "Untitled"}
       </div>
 
@@ -247,7 +254,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
       </div>
 
       {latestSeenAt && (
-        <div className="text-xs text-gray-400 mb-3">
+        <div className="text-xs text-gray-400 mb-3 break-words">
           Updated: {new Date(latestSeenAt).toLocaleString("en-GB")}
         </div>
       )}
@@ -266,17 +273,21 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         </Link>
       </div>
 
-      <div className="flex gap-3">
+      {/* ✅ Mobile-friendly buttons:
+          - 2 columns on mobile
+          - 4 columns on desktop
+      */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <button
           onClick={handleView}
-          className="flex-1 bg-blue-600 text-white py-2 rounded hover:bg-blue-700"
+          className="h-11 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
         >
           View
         </button>
 
         <button
           onClick={handleAmazon}
-          className="flex-1 bg-white border py-2 rounded hover:bg-gray-50"
+          className="h-11 bg-white border rounded-lg hover:bg-gray-50"
           title="Search this item on Amazon (affiliate)"
         >
           Amazon
@@ -284,7 +295,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
 
         <button
           onClick={handleAli}
-          className="flex-1 bg-white border py-2 rounded hover:bg-gray-50"
+          className="h-11 bg-white border rounded-lg hover:bg-gray-50"
           title={ALI_PREFIX ? "Search on AliExpress (affiliate)" : "Search on AliExpress"}
         >
           AliExpress
@@ -293,7 +304,7 @@ export default function ProductCard({ product }: { product: TrackedProduct }) {
         <button
           onClick={handleRemove}
           disabled={busy}
-          className="flex-1 bg-gray-200 py-2 rounded hover:bg-gray-300 disabled:opacity-60"
+          className="h-11 bg-gray-200 rounded-lg hover:bg-gray-300 disabled:opacity-60"
         >
           {busy ? "Removing…" : "Remove"}
         </button>
