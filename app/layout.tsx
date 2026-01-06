@@ -28,6 +28,9 @@ export default function RootLayout({
 
         {/* ✅ Fix mobile scaling/layout */}
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+        {/* ✅ Prevent Android/Chrome "auto darkening" */}
+        <meta name="color-scheme" content="light" />
       </head>
 
       <body className="min-h-screen flex flex-col font-sans bg-gray-50 text-gray-900">
@@ -35,7 +38,6 @@ export default function RootLayout({
         <main className="flex-1">{children}</main>
         <Footer />
         <Toaster richColors position="top-center" />
-
         <Analytics />
       </body>
     </html>
