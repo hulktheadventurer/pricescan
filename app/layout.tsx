@@ -2,7 +2,7 @@ import "./globals.css";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import { Toaster } from "sonner";
-import { Analytics } from "@vercel/analytics/react";
+import { Analytics } from "@vercel/analytics/next";
 
 export const metadata = {
   title: "PriceScan — Track Prices Instantly",
@@ -33,7 +33,7 @@ export default function RootLayout({
         <Footer />
         <Toaster richColors position="top-center" />
 
-        {/* ✅ Vercel Analytics */}
+        {/* ✅ THIS IS THE IMPORTANT LINE */}
         <Analytics />
       </body>
     </html>
