@@ -135,18 +135,16 @@ export default function Header() {
   return (
     <header className="w-full border-b bg-white">
       <div className="max-w-6xl mx-auto flex justify-between items-center py-4 px-4">
-        <Link
-          href="/"
-          className="text-xl font-semibold flex items-center space-x-2"
-        >
+        <Link href="/" className="flex items-center gap-2">
           <Image
-            src="/favicon-32x32.png"
+            src="/logo.png"
             alt="PriceScan"
-            width={22}
-            height={22}
+            width={44}
+            height={44}
             priority
+            className="rounded-sm"
           />
-          <span>PriceScan</span>
+          <span className="text-xl font-semibold">PriceScan</span>
         </Link>
 
         <div className="flex items-center space-x-4">
